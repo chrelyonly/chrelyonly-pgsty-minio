@@ -36,29 +36,29 @@ jobs:
     # 构建矩阵
     strategy:
       fail-fast: false
-    matrix:
-      include:
-        - goos: windows
-          goarch: amd64
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
 
-        - goos: windows
-          goarch: arm64
+          - goos: windows
+            goarch: arm64
 
-        - goos: linux
-          goarch: amd64
+          - goos: linux
+            goarch: amd64
 
-        - goos: linux
-          goarch: arm64
+          - goos: linux
+            goarch: arm64
 
-        - goos: darwin
-          goarch: amd64
+          - goos: darwin
+            goarch: amd64
 
-        - goos: darwin
-          goarch: arm64
+          - goos: darwin
+            goarch: arm64
 
-        # Android 手机
-        - goos: android
-          goarch: arm64
+          # Android 手机
+          - goos: android
+            goarch: arm64
 
     steps:
       # ================================
