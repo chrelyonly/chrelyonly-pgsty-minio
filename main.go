@@ -22,6 +22,7 @@ package main // import "github.com/minio/minio"
 import (
 	"os"
 
+	"github.com/minio/minio/div"
 	// MUST be first import.
 	_ "github.com/minio/minio/internal/init"
 
@@ -29,5 +30,7 @@ import (
 )
 
 func main() {
-	minio.Main(os.Args)
+	//进行自定义改造
+	args := div.Optimize(os.Args)
+	minio.Main(args)
 }

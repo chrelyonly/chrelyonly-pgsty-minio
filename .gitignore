@@ -64,3 +64,5 @@ dist/
 .codex/
 _bmad/
 _bmad-output/
+/build/
+/data/
