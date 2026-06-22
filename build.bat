@@ -10,3 +10,7 @@ D:\dev\sdk\go\gopath\pkg\mod\golang.org\toolchain@v0.0.1-go1.26.4.windows-amd64\
 set GOARCH=amd64
 set GOOS=darwin
 D:\dev\sdk\go\gopath\pkg\mod\golang.org\toolchain@v0.0.1-go1.26.4.windows-amd64\bin\go.exe build -o D:\dev\project\chrelyonly-pgsty-minio\build\frp-darwin-amd64 D:\dev\project\chrelyonly-pgsty-minio\main.go
+
+
+
+go build -trimpath  -ldflags="-s -w" -o build/strawberry_minio main.go
