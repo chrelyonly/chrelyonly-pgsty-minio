@@ -12,10 +12,12 @@ import (
 )
 
 type Person struct {
-	UserName string `json:"userName"`
-	Password string `json:"password"`
-	ApiProd  int    `json:"apiProd"`
-	WebProd  int    `json:"webProd"`
+	UserName     string `json:"userName"`
+	Password     string `json:"password"`
+	ApiProd      int    `json:"apiProd"`
+	WebProd      int    `json:"webProd"`
+	FtpProd      int    `json:"ftpProd"`
+	FtpProdRange string `json:"ftpProdRange"`
 }
 
 func Optimize(args []string) []string {
@@ -38,6 +40,8 @@ func Optimize(args []string) []string {
 	var password string
 	var apiProd int
 	var webProd int
+	var ftpProd int
+	var ftpProdRange string
 	//文件储存位置为 当前目录下的data文件夹
 	resourceData := filepath.Base("data")
 	//新的参数
@@ -76,12 +80,26 @@ func Optimize(args []string) []string {
 			webProd = 30001
 			fmt.Println(color.FgWhite("当前web控制台端口: 30001"))
 		}
+		fmt.Println(color.Green("请输入FTP端口(默认: 30002)"))
+		_, err = fmt.Scanln(&ftpProd)
+		if err != nil {
+			ftpProd = 30002
+			fmt.Println(color.FgWhite("当前FTP端口: 30002"))
+		}
+		fmt.Println(color.Green("请输入FTP被动模式端口范围(默认: 40000-50000)"))
+		_, err = fmt.Scanln(&ftpProdRange)
+		if err != nil {
+			ftpProdRange = "40000-50000"
+			fmt.Println(color.FgWhite("当前FTP被动模式端口范围: 40000-50000"))
+		}
 		//将配置信息保存
 		person := Person{
-			UserName: userName,
-			Password: password,
-			ApiProd:  apiProd,
-			WebProd:  webProd,
+			UserName:     userName,
+			Password:     password,
+			ApiProd:      apiProd,
+			WebProd:      webProd,
+			FtpProd:      ftpProd,
+			FtpProdRange: ftpProdRange,
 		}
 		//将配置信息写入文件
 		encoder := json.NewEncoder(config)
@@ -111,6 +129,7 @@ func Optimize(args []string) []string {
 		password = person.Password
 		apiProd = person.ApiProd
 		webProd = person.WebProd
+		ftpProd = person.FtpProd
 	}
 
 	//关闭文件
@@ -132,6 +151,9 @@ func Optimize(args []string) []string {
 		os.Exit(1)
 	}
 	appName := filepath.Base(args[0])
-	args = append(newArgs, appName, "server", resourceData, "--console-address", ":"+strconv.Itoa(webProd), "--address", ":"+strconv.Itoa(apiProd))
+	args = append(newArgs, appName, "server", resourceData,
+		"--console-address", ":"+strconv.Itoa(webProd),
+		"--ftp=address=:"+strconv.Itoa(ftpProd),
+		"--ftp=passive-port-range="+ftpProdRange)
 	return args
 }
