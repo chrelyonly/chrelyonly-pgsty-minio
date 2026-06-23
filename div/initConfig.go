@@ -18,6 +18,7 @@ type Person struct {
 	WebProd      int    `json:"webProd"`
 	FtpProd      int    `json:"ftpProd"`
 	FtpProdRange string `json:"ftpProdRange"`
+	ResourceData string `json:"resourceData"`
 }
 
 func Optimize(args []string) []string {
@@ -43,7 +44,7 @@ func Optimize(args []string) []string {
 	var ftpProd int
 	var ftpProdRange string
 	//文件储存位置为 当前目录下的data文件夹
-	resourceData := filepath.Base("data")
+	var resourceData string
 	//新的参数
 	var newArgs []string
 	//文件对象
@@ -92,6 +93,12 @@ func Optimize(args []string) []string {
 			ftpProdRange = "40000-50000"
 			fmt.Println(color.FgWhite("当前FTP被动模式端口范围: 40000-50000"))
 		}
+		fmt.Println(color.Green("输入储存目录(默认: data)"))
+		_, err = fmt.Scanln(&resourceData)
+		if err != nil {
+			resourceData = "data"
+			fmt.Println(color.FgWhite("当前输入储存目录: data"))
+		}
 		//将配置信息保存
 		person := Person{
 			UserName:     userName,
@@ -100,6 +107,7 @@ func Optimize(args []string) []string {
 			WebProd:      webProd,
 			FtpProd:      ftpProd,
 			FtpProdRange: ftpProdRange,
+			ResourceData: resourceData,
 		}
 		//将配置信息写入文件
 		encoder := json.NewEncoder(config)
@@ -130,6 +138,8 @@ func Optimize(args []string) []string {
 		apiProd = person.ApiProd
 		webProd = person.WebProd
 		ftpProd = person.FtpProd
+		ftpProdRange = person.FtpProdRange
+		resourceData = person.ResourceData
 	}
 
 	//关闭文件
