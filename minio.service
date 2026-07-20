@@ -1,6 +1,6 @@
 [Unit]
 Description=MinIO
-Documentation=https://docs.min.io
+Documentation=https://silo.pigsty.io
 Wants=network-online.target
 After=network-online.target
 AssertFileIsExecutable=/usr/local/bin/minio
