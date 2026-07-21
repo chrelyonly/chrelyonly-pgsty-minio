@@ -21,7 +21,6 @@ import (
 	"errors"
 	"net"
 	"net/url"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -53,30 +52,30 @@ func mustSplitHostPort(hostPort string) (host, port string) {
 
 // mustGetLocalIPs returns IPs of local interface
 func mustGetLocalIPs() (ipList []net.IP) {
-	ifs, err := net.Interfaces()
-	logger.FatalIf(err, "Unable to get IP addresses of this host")
-
-	for _, interf := range ifs {
-		addrs, err := interf.Addrs()
-		if err != nil {
-			continue
-		}
-		if runtime.GOOS == "windows" && interf.Flags&net.FlagUp == 0 {
-			continue
-		}
-
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-
-			ipList = append(ipList, ip)
-		}
-	}
+	//ifs, err := net.Interfaces()
+	//logger.FatalIf(err, "Unable to get IP addresses of this host")
+	//
+	//for _, interf := range ifs {
+	//	addrs, err := interf.Addrs()
+	//	if err != nil {
+	//		continue
+	//	}
+	//	if runtime.GOOS == "windows" && interf.Flags&net.FlagUp == 0 {
+	//		continue
+	//	}
+	//
+	//	for _, addr := range addrs {
+	//		var ip net.IP
+	//		switch v := addr.(type) {
+	//		case *net.IPNet:
+	//			ip = v.IP
+	//		case *net.IPAddr:
+	//			ip = v.IP
+	//		}
+	//
+	//		ipList = append(ipList, ip)
+	//	}
+	//}
 
 	return ipList
 }
