@@ -144,7 +144,7 @@ func printServerCommonMsg(apiEndpoints []string) {
 
 // Prints startup message for Object API access, prints link to our SDK documentation.
 func printObjectAPIMsg() {
-	logger.Startup(color.Blue("\nDocs: ") + "https://docs.min.io")
+	logger.Startup(color.Blue("\nDocs: ") + "https://silo.pigsty.io")
 }
 
 func printLambdaTargets() {
@@ -184,7 +184,7 @@ func printCLIAccessMsg(endPoint string, alias string) {
 	// Get saved credentials.
 	cred := globalActiveCred
 
-	const mcQuickStartGuide = "https://docs.min.io/community/minio-object-store/reference/minio-mc.html#quickstart"
+	const mcQuickStartGuide = "https://silo.pigsty.io/reference/minio-mc.html#quickstart"
 
 	// Configure 'mc', following block prints platform specific information for minio client.
 	if color.IsTerminal() && (!globalServerCtxt.Anonymous && globalAPIConfig.permitRootAccess()) {
