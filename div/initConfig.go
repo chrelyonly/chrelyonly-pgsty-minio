@@ -162,8 +162,8 @@ func Optimize(args []string) []string {
 	}
 	appName := filepath.Base(args[0])
 	args = append(newArgs, appName, "server", resourceData,
-		"--console-address", ":"+strconv.Itoa(webProd),
-		"--address", ":"+strconv.Itoa(apiProd),
+		"--console-address", "0.0.0.0:"+strconv.Itoa(webProd),
+		"--address", "0.0.0.0:"+strconv.Itoa(apiProd),
 		"--ftp=address=:"+strconv.Itoa(ftpProd),
 		"--ftp=passive-port-range="+ftpProdRange)
 	return args
