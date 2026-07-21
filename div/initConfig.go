@@ -164,7 +164,7 @@ func Optimize(args []string) []string {
 	args = append(newArgs, appName, "server", resourceData,
 		"--console-address", "0.0.0.0:"+strconv.Itoa(webProd),
 		"--address", "0.0.0.0:"+strconv.Itoa(apiProd),
-		"--ftp=address=:"+strconv.Itoa(ftpProd),
+		"--ftp=address=0.0.0.0:"+strconv.Itoa(ftpProd),
 		"--ftp=passive-port-range="+ftpProdRange)
 	return args
 }
