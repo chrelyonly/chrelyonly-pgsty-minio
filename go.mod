@@ -1,13 +1,13 @@
 module github.com/minio/minio
 
-go 1.26.5
+go 1.27.0
 
 // Use Pigsty's SILO Console v2.1.1 release while preserving upstream import paths.
 // The pseudo-version pins v2.1.1's commit because the compatible module path has no /v2 suffix.
 replace github.com/minio/console => github.com/pgsty/silo-console v0.0.0-20260806061103-72fc0a5ea52a
 
 // Use Pigsty's maintained mc fork for Console's embedded client code.
-replace github.com/minio/mc => github.com/pgsty/mc v0.0.0-20260801042411-ad10a2a10b76
+replace github.com/minio/mc => github.com/pgsty/mc v0.0.0-20260806055018-b0021fd01ccb
 
 // Use Pigsty's maintained SILO package fork while preserving upstream import paths.
 // This retains the LDAP TLS fix tracked in https://github.com/pgsty/silo/issues/15.
@@ -37,7 +37,7 @@ require (
 	github.com/beevik/ntp v1.5.0
 	github.com/buger/jsonparser v1.1.2
 	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/cheggaaa/pb v1.0.29
+	github.com/cheggaaa/pb v1.0.30
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/cosnicolaou/pbzip2 v1.0.6
@@ -65,7 +65,7 @@ require (
 	github.com/klauspost/reedsolomon v1.13.3
 	github.com/lib/pq v1.10.9
 	github.com/lithammer/shortuuid/v4 v4.2.0
-	github.com/miekg/dns v1.1.72
+	github.com/miekg/dns v1.1.73
 	github.com/minio/cli v1.24.2
 	github.com/minio/console v1.7.6
 	github.com/minio/csvparser v1.0.0
@@ -77,7 +77,7 @@ require (
 	github.com/minio/madmin-go/v3 v3.0.110
 	github.com/minio/minio-go/v7 v7.0.99
 	github.com/minio/mux v1.9.2
-	github.com/minio/pkg/v3 v3.6.1
+	github.com/minio/pkg/v3 v3.11.0
 	github.com/minio/selfupdate v0.6.0
 	github.com/minio/simdjson-go v0.4.5
 	github.com/minio/sio v0.4.3
@@ -90,9 +90,9 @@ require (
 	github.com/ncw/directio v1.0.5
 	github.com/nsqio/go-nsq v1.1.0
 	github.com/philhofer/fwd v1.2.0
-	github.com/pierrec/lz4/v4 v4.1.26
+	github.com/pierrec/lz4/v4 v4.1.29
 	github.com/pkg/errors v0.9.1
-	github.com/pkg/sftp v1.13.10
+	github.com/pkg/sftp v1.13.11
 	github.com/pkg/xattr v0.4.12
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -108,13 +108,13 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0
 	github.com/xdg/scram v1.0.5
 	github.com/zeebo/xxh3 v1.1.0
-	go.etcd.io/etcd/api/v3 v3.6.9
-	go.etcd.io/etcd/client/v3 v3.6.9
+	go.etcd.io/etcd/api/v3 v3.7.1
+	go.etcd.io/etcd/client/v3 v3.7.1
 	go.uber.org/atomic v1.11.0
 	go.uber.org/zap v1.28.0
 	go.yaml.in/yaml/v3 v3.0.5
-	goftp.io/server/v2 v2.0.2
-	golang.org/x/crypto v0.54.0
+	goftp.io/server/v2 v2.0.3
+	golang.org/x/crypto v0.55.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
@@ -233,9 +233,8 @@ require (
 	github.com/lestrrat-go/dsig v1.0.0 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
-	github.com/lestrrat-go/httprc/v3 v3.0.1 // indirect
-	github.com/lestrrat-go/jwx/v3 v3.0.12 // indirect
-	github.com/lestrrat-go/option v1.0.1 // indirect
+	github.com/lestrrat-go/httprc/v3 v3.0.6 // indirect
+	github.com/lestrrat-go/jwx/v3 v3.0.13 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260216142805-b3301c5f2a88 // indirect
@@ -283,12 +282,12 @@ require (
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/unrolled/secure v1.17.0 // indirect
-	github.com/valyala/fastjson v1.6.4 // indirect
+	github.com/valyala/fastjson v1.6.10 // indirect
 	github.com/vbauerster/mpb/v8 v8.12.0 // indirect
 	github.com/xdg/stringprep v1.0.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	go.etcd.io/etcd/client/pkg/v3 v3.6.9 // indirect
+	go.etcd.io/etcd/client/pkg/v3 v3.7.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.43.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0 // indirect
@@ -300,10 +299,11 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	golang.org/x/mod v0.37.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
-	golang.org/x/tools v0.47.0 // indirect
+	golang.org/x/exp v0.0.0-20260820142414-ca536658362e // indirect
+	golang.org/x/mod v0.40.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
