@@ -235,9 +235,9 @@ func Test_minioEnvironFromFileWhitespaceAndValidation(t *testing.T) {
 		},
 		{
 			name:    "valid underscore and digits",
-			content: "_MINIO_2=value",
+			content: "_VALID_2=value",
 			want: []envKV{
-				{Key: "_MINIO_2", Value: "value"},
+				{Key: "_VALID_2", Value: "value"},
 			},
 		},
 		{
