@@ -859,7 +859,7 @@ func (a adminAPIHandlers) UpdateServiceAccount(w http.ResponseWriter, r *http.Re
 
 	var sp *policy.Policy
 	if len(updateReq.NewPolicy) > 0 {
-		sp, err = policy.ParseConfig(bytes.NewReader(updateReq.NewPolicy))
+		sp, err = policy.ParseConfigStrict(bytes.NewReader(updateReq.NewPolicy))
 		if err != nil {
 			writeErrorResponseJSON(ctx, w, toAdminAPIErr(ctx, err), r.URL)
 			return
@@ -1729,7 +1729,7 @@ func (a adminAPIHandlers) AddCannedPolicy(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	iamPolicy, err := policy.ParseConfig(bytes.NewReader(iamPolicyBytes))
+	iamPolicy, err := policy.ParseConfigStrict(bytes.NewReader(iamPolicyBytes))
 	if err != nil {
 		writeErrorResponseJSON(ctx, w, toAdminAPIErr(ctx, err), r.URL)
 		return
@@ -2981,7 +2981,7 @@ func commonAddServiceAccount(r *http.Request, ldap bool) (context.Context, auth.
 
 	var sp *policy.Policy
 	if len(createReq.Policy) > 0 {
-		sp, err = policy.ParseConfig(bytes.NewReader(createReq.Policy))
+		sp, err = policy.ParseConfigStrict(bytes.NewReader(createReq.Policy))
 		if err != nil {
 			return ctx, auth.Credentials{}, newServiceAccountOpts{}, madmin.AddServiceAccountReq{}, "", toAdminAPIErr(ctx, err)
 		}

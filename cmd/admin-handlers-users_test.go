@@ -204,6 +204,7 @@ func TestIAMInternalIDPServerSuite(t *testing.T) {
 				suite.TestUserCreate(c)
 				suite.TestUserPolicyEscalationBug(c)
 				suite.TestPolicyCreate(c)
+				suite.TestServiceAccountBareARNPolicyRejected(c)
 				suite.TestCannedPolicies(c)
 				suite.TestGroupAddRemove(c)
 				suite.TestServiceAccountOpsByAdmin(c)
@@ -600,6 +601,20 @@ func (s *TestSuiteIAM) TestPolicyCreate(c *check) {
 		c.Fatalf("invalid policy creation success")
 	}
 
+	for i, resource := range []string{"arn:aws:s3:::", "*arn:aws:s3:::"} {
+		barePolicyBytes := fmt.Appendf(nil, `{
+ "Version": "2012-10-17",
+ "Statement": [{
+  "Effect": "Deny",
+  "Action": ["s3:GetObject"],
+  "Resource": ["%s"]
+ }]
+}`, resource)
+		if err = s.adm.AddCannedPolicy(ctx, fmt.Sprintf("%s-bare-%d", policy, i), barePolicyBytes); err == nil {
+			c.Fatalf("bare ARN policy creation succeeded for %q", resource)
+		}
+	}
+
 	// 3. Create a user, associate policy and verify access
 	accessKey, secretKey := mustGenerateCredentials(c)
 	err = s.adm.SetUser(ctx, accessKey, secretKey, madmin.AccountEnabled)
@@ -650,6 +665,51 @@ func (s *TestSuiteIAM) TestPolicyCreate(c *check) {
 	err = s.adm.RemoveCannedPolicy(ctx, policy)
 	if err != nil {
 		c.Fatalf("policy del err: %v", err)
+	}
+}
+
+func (s *TestSuiteIAM) TestServiceAccountBareARNPolicyRejected(c *check) {
+	ctx, cancel := context.WithTimeout(context.Background(), testDefaultTimeout)
+	defer cancel()
+
+	barePolicy := []byte(`{
+ "Version": "2012-10-17",
+ "Statement": [{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject"],
+  "NotResource": ["arn:aws:s3:::"]
+ }]
+}`)
+	if _, err := s.adm.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+		TargetUser: globalActiveCred.AccessKey,
+		Policy:     barePolicy,
+	}); err == nil {
+		c.Fatal("service account creation accepted a bare ARN policy")
+	}
+
+	validPolicy := []byte(`{
+ "Version": "2012-10-17",
+ "Statement": [{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject"],
+  "Resource": ["arn:aws:s3:::*"]
+ }]
+}`)
+	credentials, err := s.adm.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+		TargetUser: globalActiveCred.AccessKey,
+		Policy:     validPolicy,
+	})
+	if err != nil {
+		c.Fatalf("service account creation rejected an explicit resource: %v", err)
+	}
+	defer func() {
+		_ = s.adm.DeleteServiceAccount(ctx, credentials.AccessKey)
+	}()
+
+	if err = s.adm.UpdateServiceAccount(ctx, credentials.AccessKey, madmin.UpdateServiceAccountReq{
+		NewPolicy: barePolicy,
+	}); err == nil {
+		c.Fatal("service account update accepted a bare ARN policy")
 	}
 }
 

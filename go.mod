@@ -11,9 +11,9 @@ replace github.com/minio/mc => github.com/pgsty/mc v0.0.0-20260806055018-b0021fd
 
 // Use Pigsty's maintained SILO package fork while preserving upstream import paths.
 // This retains the LDAP TLS fix tracked in https://github.com/pgsty/silo/issues/15.
-// v3.11.0 follows upstream minio/pkg's 3.11 line and carries the
-// minio/minio#20449 bucket-write boundary hardening.
-replace github.com/minio/pkg/v3 => github.com/pgsty/silo-pkg/v3 v3.11.0
+// v3.12.0 carries the minio/minio#20449 bucket-write boundary hardening and
+// rejects bare ARN prefixes on strict policy-write paths.
+replace github.com/minio/pkg/v3 => github.com/pgsty/silo-pkg/v3 v3.12.0
 
 // v22.7.0 does not compile on NetBSD because its unix implementation uses
 // CLOCK_MONOTONIC, which is unavailable there. Keep the last portable release
@@ -77,7 +77,7 @@ require (
 	github.com/minio/madmin-go/v3 v3.0.110
 	github.com/minio/minio-go/v7 v7.0.99
 	github.com/minio/mux v1.9.2
-	github.com/minio/pkg/v3 v3.11.0
+	github.com/minio/pkg/v3 v3.12.0
 	github.com/minio/selfupdate v0.6.0
 	github.com/minio/simdjson-go v0.4.5
 	github.com/minio/sio v0.4.3
@@ -210,7 +210,6 @@ require (
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.15 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
-	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
