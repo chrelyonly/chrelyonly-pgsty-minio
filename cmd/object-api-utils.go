@@ -1038,9 +1038,10 @@ type SealMD5CurrFn func([]byte) []byte
 // PutObjReader is a type that wraps sio.EncryptReader and
 // underlying hash.Reader in a struct
 type PutObjReader struct {
-	*hash.Reader              // actual data stream
-	rawReader    *hash.Reader // original data stream
-	sealMD5Fn    SealMD5CurrFn
+	*hash.Reader                // actual data stream
+	rawReader      *hash.Reader // original data stream used for ETag calculation
+	checksumReader *hash.Reader // logical plaintext stream used for S3 checksum calculation
+	sealMD5Fn      SealMD5CurrFn
 }
 
 // Size returns the absolute number of bytes the Reader
@@ -1093,7 +1094,43 @@ func (p *PutObjReader) WithEncryption(encReader *hash.Reader, objEncKey *crypto.
 // NewPutObjReader returns a new PutObjReader. It uses given hash.Reader's
 // MD5Current method to construct md5sum when requested downstream.
 func NewPutObjReader(rawReader *hash.Reader) *PutObjReader {
-	return &PutObjReader{Reader: rawReader, rawReader: rawReader}
+	return &PutObjReader{Reader: rawReader, rawReader: rawReader, checksumReader: rawReader}
+}
+
+// setChecksumReader sets the logical plaintext reader used for S3 checksums.
+// It can differ from rawReader when the storage stream is compressed.
+func (p *PutObjReader) setChecksumReader(r *hash.Reader) {
+	if r != nil {
+		p.checksumReader = r
+	}
+}
+
+// contentChecksumType returns the effective client-provided or server-computed
+// checksum type for the logical plaintext stream.
+func (p *PutObjReader) contentChecksumType() hash.ChecksumType {
+	if p.checksumReader == nil {
+		return hash.ChecksumNone
+	}
+	if t := p.checksumReader.ContentCRCType(); t.IsSet() {
+		return t
+	}
+	return p.checksumReader.ServerSideChecksumType
+}
+
+// contentChecksum returns the effective checksum for part metadata. A
+// client-provided checksum takes precedence; server computation is only a
+// fallback when the client omitted one.
+func (p *PutObjReader) contentChecksum() map[string]string {
+	if p.checksumReader == nil {
+		return nil
+	}
+	if checksum := p.checksumReader.ContentCRC(); checksum != nil {
+		return checksum
+	}
+	if checksum := p.checksumReader.ServerSideChecksumResult; checksum != nil && checksum.Valid() {
+		return map[string]string{checksum.Type.String(): checksum.Encoded}
+	}
+	return nil
 }
 
 // RawServerSideChecksumResult returns the ServerSideChecksumResult from the

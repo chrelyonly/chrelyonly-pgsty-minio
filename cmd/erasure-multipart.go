@@ -597,12 +597,15 @@ func (er erasureObjects) PutObjectPart(ctx context.Context, bucket, object, uplo
 	onlineDisks := er.getDisks()
 	writeQuorum := fi.WriteQuorum(er.defaultWQuorum())
 
-	if cs := fi.Metadata[hash.MinIOMultipartChecksum]; cs != "" {
-		if r.ContentCRCType().String() != cs {
+	expectedChecksumType, checksumEnabled := multipartChecksumType(fi.Metadata)
+	if checksumEnabled {
+		got := r.contentChecksumType()
+		if !expectedChecksumType.IsSet() || !got.IsSet() || got.Base() != expectedChecksumType {
 			return pi, InvalidArgument{
 				Bucket: bucket,
 				Object: fi.Name,
-				Err:    fmt.Errorf("checksum missing, want %q, got %q", cs, r.ContentCRCType().String()),
+				Err: fmt.Errorf("checksum missing, want %q, got %q",
+					fi.Metadata[hash.MinIOMultipartChecksum], got.String()),
 			}
 		}
 	}
@@ -725,6 +728,13 @@ func (er erasureObjects) PutObjectPart(ctx context.Context, bucket, object, uplo
 		}
 	}
 
+	partChecksums := r.contentChecksum()
+	if checksumEnabled && partChecksums[expectedChecksumType.String()] == "" {
+		err := fmt.Errorf("internal error: checksum missing after reading part, want %q", expectedChecksumType.String())
+		bugLogIf(ctx, err)
+		return pi, toObjectErr(err, bucket, object, uploadID)
+	}
+
 	partInfo := ObjectPartInfo{
 		Number:     partID,
 		ETag:       md5hex,
@@ -732,7 +742,7 @@ func (er erasureObjects) PutObjectPart(ctx context.Context, bucket, object, uplo
 		ActualSize: actualSize,
 		ModTime:    UTCNow(),
 		Index:      index,
-		Checksums:  r.ContentCRC(),
+		Checksums:  partChecksums,
 	}
 
 	partFI, err := partInfo.MarshalMsg(nil)
