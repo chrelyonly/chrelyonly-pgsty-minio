@@ -20,8 +20,11 @@ package cmd
 import (
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 
 	consoleapi "github.com/minio/console/api"
+	bktcors "github.com/minio/minio/internal/bucket/cors"
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/mux"
 	"github.com/minio/pkg/v3/wildcard"
@@ -644,6 +647,79 @@ func registerAPIRouter(router *mux.Router) {
 }
 
 // corsHandler handler for CORS (Cross Origin Resource Sharing)
+// applyBucketCors applies a bucket's CORS configuration to the request.
+// For an OPTIONS preflight it writes the full CORS response and returns true
+// (request is complete). For an actual request it adds the applicable
+// Access-Control-* response headers and returns false so the request
+// continues down the handler chain. If no rule matches a preflight it writes
+// 403 and returns true.
+func applyBucketCors(w http.ResponseWriter, r *http.Request, cfg *bktcors.Config) (handled bool) {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false // not a CORS request
+	}
+
+	isPreflight := r.Method == http.MethodOptions &&
+		r.Header.Get("Access-Control-Request-Method") != ""
+
+	if isPreflight {
+		method := r.Header.Get("Access-Control-Request-Method")
+		rule, ok := cfg.MatchRule(origin, method)
+		if !ok {
+			writeResponse(w, http.StatusForbidden, nil, mimeNone)
+			return true
+		}
+		reqHeaders := splitAndTrim(r.Header.Get("Access-Control-Request-Headers"))
+		allowedHeaders, ok := rule.FilterAllowedHeaders(reqHeaders)
+		if !ok {
+			writeResponse(w, http.StatusForbidden, nil, mimeNone)
+			return true
+		}
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", origin)
+		h.Set("Access-Control-Allow-Methods", method)
+		if len(allowedHeaders) > 0 {
+			h.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
+		}
+		if rule.MaxAgeSeconds > 0 {
+			h.Set("Access-Control-Max-Age", strconv.Itoa(rule.MaxAgeSeconds))
+		}
+		h.Set("Access-Control-Allow-Credentials", "true")
+		h.Add("Vary", "Origin")
+		writeResponse(w, http.StatusOK, nil, mimeNone)
+		return true
+	}
+
+	// Actual request: attach headers if the origin+method match.
+	rule, ok := cfg.MatchRule(origin, r.Method)
+	if !ok {
+		return false // no matching rule → no CORS headers, continue normally
+	}
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", origin)
+	h.Set("Access-Control-Allow-Credentials", "true")
+	if len(rule.ExposeHeaders) > 0 {
+		h.Set("Access-Control-Expose-Headers", strings.Join(rule.ExposeHeaders, ", "))
+	}
+	h.Add("Vary", "Origin")
+	return false
+}
+
+// splitAndTrim splits a comma-separated header list into trimmed, non-empty values.
+func splitAndTrim(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func corsHandler(handler http.Handler) http.Handler {
 	commonS3Headers := []string{
 		xhttp.Date,
@@ -688,5 +764,17 @@ func corsHandler(handler http.Handler) http.Handler {
 		ExposedHeaders:   commonS3Headers,
 		AllowCredentials: true,
 	}
-	return cors.New(opts).Handler(handler)
+	globalCors := cors.New(opts).Handler(handler)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bucket, _ := request2BucketObjectName(r); bucket != "" && globalBucketMetadataSys != nil {
+			if cfg, _, err := globalBucketMetadataSys.GetCorsConfig(bucket); err == nil && cfg != nil {
+				if applyBucketCors(w, r, cfg) {
+					return
+				}
+				handler.ServeHTTP(w, r)
+				return
+			}
+		}
+		globalCors.ServeHTTP(w, r)
+	})
 }
