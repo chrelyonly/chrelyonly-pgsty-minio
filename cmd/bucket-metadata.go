@@ -31,6 +31,7 @@ import (
 
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7/pkg/tags"
+	"github.com/minio/minio/internal/bucket/cors"
 	bucketsse "github.com/minio/minio/internal/bucket/encryption"
 	"github.com/minio/minio/internal/bucket/lifecycle"
 	objectlock "github.com/minio/minio/internal/bucket/object/lock"
@@ -58,6 +59,9 @@ var (
 	enabledBucketVersioningConfig = []byte(`<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>`)
 )
 
+// Bucket CORS configuration file.
+const bucketCorsConfig = "cors.xml"
+
 //go:generate msgp -file $GOFILE
 
 // BucketMetadata contains bucket metadata.
@@ -80,6 +84,7 @@ type BucketMetadata struct {
 	ReplicationConfigXML        []byte
 	BucketTargetsConfigJSON     []byte
 	BucketTargetsConfigMetaJSON []byte
+	CorsConfigXML               []byte
 
 	PolicyConfigUpdatedAt            time.Time
 	ObjectLockConfigUpdatedAt        time.Time
@@ -92,6 +97,7 @@ type BucketMetadata struct {
 	NotificationConfigUpdatedAt      time.Time
 	BucketTargetsConfigUpdatedAt     time.Time
 	BucketTargetsConfigMetaUpdatedAt time.Time
+	CorsConfigUpdatedAt              time.Time
 	// Add a new UpdatedAt field and update lastUpdate function
 
 	// Unexported fields. Must be updated atomically.
@@ -106,6 +112,7 @@ type BucketMetadata struct {
 	replicationConfig      *replication.Config
 	bucketTargetConfig     *madmin.BucketTargets
 	bucketTargetConfigMeta map[string]string
+	corsConfig             *cors.Config
 }
 
 // newBucketMetadata creates BucketMetadata with the supplied name and Created to Now.
@@ -159,6 +166,9 @@ func (b BucketMetadata) lastUpdate() (t time.Time) {
 	}
 	if b.BucketTargetsConfigMetaUpdatedAt.After(t) {
 		t = b.BucketTargetsConfigMetaUpdatedAt
+	}
+	if b.CorsConfigUpdatedAt.After(t) {
+		t = b.CorsConfigUpdatedAt
 	}
 
 	return t
@@ -308,6 +318,15 @@ func (b *BucketMetadata) parseAllConfigs(ctx context.Context, objectAPI ObjectLa
 		}
 	} else {
 		b.taggingConfig = nil
+	}
+
+	if len(b.CorsConfigXML) != 0 {
+		b.corsConfig, err = cors.ParseBucketCorsConfig(bytes.NewReader(b.CorsConfigXML))
+		if err != nil {
+			return err
+		}
+	} else {
+		b.corsConfig = nil
 	}
 
 	if bytes.Equal(b.ObjectLockConfigXML, enabledBucketObjectLockConfig) {
