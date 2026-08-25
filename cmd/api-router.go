@@ -112,11 +112,6 @@ var rejectedBucketAPIs = []rejectedAPI{
 		queries: []string{"inventory", ""},
 	},
 	{
-		api:     "cors",
-		methods: []string{http.MethodPut, http.MethodDelete},
-		queries: []string{"cors", ""},
-	},
-	{
 		api:     "metrics",
 		methods: []string{http.MethodGet, http.MethodPut, http.MethodDelete},
 		queries: []string{"metrics", ""},
