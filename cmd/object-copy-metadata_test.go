@@ -202,3 +202,122 @@ func testAPICopyObjectSSECKeyRotationKeepsCompressionState(obj ObjectLayer, inst
 			instanceType, response.Code, response.Body.Len(), len(data), response.Body.String())
 	}
 }
+
+// TestAPICopyObjectMetadataOnlyNullVersion covers the copy whose source is a
+// null version on a bucket that gained versioning after the object was written.
+// The object layer cannot reference such a version, so it rewrites the data and
+// the recorded compression metadata has to describe the rewritten bytes.
+func TestAPICopyObjectMetadataOnlyNullVersion(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testAPICopyObjectMetadataOnlyNullVersion,
+		endpoints:  []string{"CopyObject", "PutObject", "GetObject"},
+	})
+}
+
+func testAPICopyObjectMetadataOnlyNullVersion(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
+) {
+	restoreCompression := setCopyChecksumCompression(true)
+	compressionRestored := false
+	defer func() {
+		if !compressionRestored {
+			restoreCompression()
+		}
+	}()
+
+	data := bytes.Repeat([]byte("null-version-metadata-copy-"), 64*1024)
+	want := mustChecksum(t, hash.ChecksumCRC32, data)
+	object := "copy-metadata/null-version.txt"
+	putCopyChecksumSource(t, apiRouter, credentials, bucketName, object, data,
+		map[string]string{xhttp.AmzChecksumCRC32: want})
+
+	before, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.IsCompressed() || before.VersionID != "" {
+		t.Fatalf("%s: invalid null-version precondition: compressed=%v versionID=%q",
+			instanceType, before.IsCompressed(), before.VersionID)
+	}
+
+	// Versioning is enabled after the write, so the object keeps a null version.
+	if _, err := globalBucketMetadataSys.Update(t.Context(), bucketName,
+		bucketVersioningConfig, enabledBucketVersioningConfig); err != nil {
+		t.Fatalf("%s: unable to enable versioning: %v", instanceType, err)
+	}
+	if !globalBucketVersioningSys.PrefixEnabled(bucketName, object) {
+		t.Fatalf("%s: versioning did not become enabled", instanceType)
+	}
+
+	// Without compression the rewritten destination stores plaintext.
+	restoreCompression()
+	compressionRestored = true
+
+	rec := copyChecksumRequest(t, apiRouter, credentials, bucketName, object, object,
+		map[string]string{xhttp.AmzMetadataDirective: "REPLACE"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s: metadata-only CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
+	}
+
+	after := assertCopyChecksum(t, obj, bucketName, object, hash.ChecksumCRC32, data, false, nil)
+	if after.VersionID == "" {
+		t.Fatalf("%s: versioned copy did not create a new version", instanceType)
+	}
+	if got := readCopyChecksumObject(t, obj, bucketName, object, ObjectOptions{}); !bytes.Equal(got, data) {
+		t.Fatalf("%s: copied object body differs: got %d bytes, want %d", instanceType, len(got), len(data))
+	}
+}
+
+func TestCopyRewritesObjectData(t *testing.T) {
+	tests := []struct {
+		name         string
+		metadataOnly bool
+		srcOpts      ObjectOptions
+		dstOpts      ObjectOptions
+		want         bool
+	}{
+		{
+			name: "data copy always rewrites",
+			want: true,
+		},
+		{
+			name:         "unversioned in-place metadata update",
+			metadataOnly: true,
+		},
+		{
+			name:         "addressed version updated in place",
+			metadataOnly: true,
+			srcOpts:      ObjectOptions{VersionID: "v1"},
+			dstOpts:      ObjectOptions{VersionID: "v1"},
+		},
+		{
+			name:         "versioned self referential version",
+			metadataOnly: true,
+			srcOpts:      ObjectOptions{VersionID: "v1"},
+			dstOpts:      ObjectOptions{Versioned: true},
+		},
+		{
+			name:         "versioned null source version cannot be referenced",
+			metadataOnly: true,
+			dstOpts:      ObjectOptions{Versioned: true},
+			want:         true,
+		},
+		{
+			name:         "suspended destination with an addressed source version",
+			metadataOnly: true,
+			srcOpts:      ObjectOptions{VersionID: "v1"},
+			dstOpts:      ObjectOptions{VersionSuspended: true, VersionID: nullVersionID},
+			want:         true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := copyRewritesObjectData(tt.metadataOnly, tt.srcOpts, tt.dstOpts); got != tt.want {
+				t.Fatalf("copyRewritesObjectData() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
