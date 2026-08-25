@@ -646,7 +646,6 @@ func registerAPIRouter(router *mux.Router) {
 	apiRouter.MethodNotAllowedHandler = collectAPIStats("methodnotallowed", httpTraceAll(methodNotAllowedHandler("S3")))
 }
 
-// corsHandler handler for CORS (Cross Origin Resource Sharing)
 // applyBucketCors applies a bucket's CORS configuration to the request.
 // For an OPTIONS preflight it writes the full CORS response and returns true
 // (request is complete). For an actual request it adds the applicable
@@ -664,13 +663,8 @@ func applyBucketCors(w http.ResponseWriter, r *http.Request, cfg *bktcors.Config
 
 	if isPreflight {
 		method := r.Header.Get("Access-Control-Request-Method")
-		rule, ok := cfg.MatchRule(origin, method)
-		if !ok {
-			writeResponse(w, http.StatusForbidden, nil, mimeNone)
-			return true
-		}
 		reqHeaders := splitAndTrim(r.Header.Get("Access-Control-Request-Headers"))
-		allowedHeaders, ok := rule.FilterAllowedHeaders(reqHeaders)
+		rule, allowedHeaders, ok := cfg.MatchPreflight(origin, method, reqHeaders)
 		if !ok {
 			writeResponse(w, http.StatusForbidden, nil, mimeNone)
 			return true
@@ -720,6 +714,7 @@ func splitAndTrim(s string) []string {
 	return out
 }
 
+// corsHandler handler for CORS (Cross Origin Resource Sharing)
 func corsHandler(handler http.Handler) http.Handler {
 	commonS3Headers := []string{
 		xhttp.Date,

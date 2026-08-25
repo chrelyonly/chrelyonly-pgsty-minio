@@ -97,4 +97,36 @@ func testBucketCorsHandlers(obj ObjectLayer, instanceType, bucketName string, ap
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PUT malformed cors: expected 400, got %d", rec.Code)
 	}
+
+	// Re-PUT the config so the store→GetCorsConfig→enforce seam below has
+	// something to enforce (the earlier DELETE removed it).
+	req, err = newTestSignedRequestV4(http.MethodPut, getBucketCorsURL("", bucketName),
+		int64(len(testCORSDoc)), bytes.NewReader([]byte(testCORSDoc)), creds.AccessKey, creds.SecretKey, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	apiRouter.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT cors (re-put): expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// End-to-end enforcement: drive an OPTIONS preflight through the real
+	// corsHandler wrapper (not applyBucketCors in isolation), exercising the
+	// full store -> globalBucketMetadataSys.GetCorsConfig -> enforce seam.
+	wrapped := corsHandler(apiRouter)
+
+	preflightURL := getBucketCorsURL("", bucketName)
+	preflightReq := httptest.NewRequest(http.MethodOptions, preflightURL, nil)
+	preflightReq.Header.Set("Origin", "http://example.com")
+	preflightReq.Header.Set("Access-Control-Request-Method", http.MethodGet)
+
+	rec = httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, preflightReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("OPTIONS preflight via corsHandler: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://example.com" {
+		t.Fatalf("OPTIONS preflight via corsHandler: expected Access-Control-Allow-Origin echoed, got %q", got)
+	}
 }

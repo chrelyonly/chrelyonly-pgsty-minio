@@ -148,3 +148,23 @@ func (c *Config) MatchRule(origin, method string) (*Rule, bool) {
 	}
 	return nil, false
 }
+
+// MatchPreflight returns the first rule whose origin and method match and
+// whose AllowedHeaders permit every header in reqHeaders. Unlike MatchRule,
+// this keeps evaluating subsequent rules until one fully satisfies the
+// preflight request, since an earlier origin/method match with a more
+// restrictive header list must not shadow a later, more permissive rule.
+func (c *Config) MatchPreflight(origin, method string, reqHeaders []string) (rule *Rule, allowedHeaders []string, ok bool) {
+	for i := range c.CORSRules {
+		r := &c.CORSRules[i]
+		if !r.HasAllowedOrigin(origin) || !r.HasAllowedMethod(method) {
+			continue
+		}
+		allowed, headersOK := r.FilterAllowedHeaders(reqHeaders)
+		if !headersOK {
+			continue
+		}
+		return r, allowed, true
+	}
+	return nil, nil, false
+}

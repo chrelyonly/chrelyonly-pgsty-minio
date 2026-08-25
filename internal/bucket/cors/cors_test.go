@@ -89,3 +89,40 @@ func TestMatching(t *testing.T) {
 		t.Fatal("did not expect authorization to be allowed")
 	}
 }
+
+func TestMatchPreflightFallsThroughToLaterRule(t *testing.T) {
+	// Rule A matches origin+method but only allows a restrictive header set.
+	// Rule B, listed after A, matches the same origin+method and allows any
+	// header. A preflight requesting a header only B permits must not be
+	// rejected just because A was tried first.
+	const doc = `<CORSConfiguration>
+  <CORSRule>
+    <ID>A-restrictive</ID>
+    <AllowedOrigin>https://app.example.com</AllowedOrigin>
+    <AllowedMethod>GET</AllowedMethod>
+    <AllowedHeader>x-amz-date</AllowedHeader>
+  </CORSRule>
+  <CORSRule>
+    <ID>B-permissive</ID>
+    <AllowedOrigin>https://app.example.com</AllowedOrigin>
+    <AllowedMethod>GET</AllowedMethod>
+    <AllowedHeader>*</AllowedHeader>
+  </CORSRule>
+</CORSConfiguration>`
+
+	c, err := ParseBucketCorsConfig(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	rule, allowed, ok := c.MatchPreflight("https://app.example.com", "GET", []string{"x-custom-header"})
+	if !ok {
+		t.Fatal("expected MatchPreflight to succeed via the later, permissive rule")
+	}
+	if rule.ID != "B-permissive" {
+		t.Fatalf("expected rule B-permissive to be selected, got %q", rule.ID)
+	}
+	if len(allowed) != 1 || allowed[0] != "x-custom-header" {
+		t.Fatalf("unexpected allowed headers: %v", allowed)
+	}
+}

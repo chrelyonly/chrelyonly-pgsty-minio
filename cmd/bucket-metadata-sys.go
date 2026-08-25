@@ -376,6 +376,20 @@ func (sys *BucketMetadataSys) GetCorsConfig(bucket string) (*cors.Config, time.T
 	return meta.corsConfig, meta.CorsConfigUpdatedAt, nil
 }
 
+// GetCorsConfigXML returns the raw stored CORS configuration XML for the
+// given bucket, preserving the document exactly as it was PUT (including
+// the S3 xmlns and any unmodeled elements).
+func (sys *BucketMetadataSys) GetCorsConfigXML(bucket string) ([]byte, time.Time, error) {
+	meta, _, err := sys.GetConfig(GlobalContext, bucket)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if len(meta.CorsConfigXML) == 0 {
+		return nil, time.Time{}, errConfigNotFound
+	}
+	return meta.CorsConfigXML, meta.CorsConfigUpdatedAt, nil
+}
+
 // CreatedAt returns the time of creation of bucket
 func (sys *BucketMetadataSys) CreatedAt(bucket string) (time.Time, error) {
 	meta, _, err := sys.GetConfig(GlobalContext, bucket)

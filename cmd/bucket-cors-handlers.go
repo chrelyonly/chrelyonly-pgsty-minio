@@ -20,7 +20,6 @@ package cmd
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/xml"
 	"errors"
 	"io"
 	"net/http"
@@ -136,18 +135,12 @@ func (api objectAPIHandlers) GetBucketCorsHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	config, _, err := globalBucketMetadataSys.GetCorsConfig(bucket)
+	configData, _, err := globalBucketMetadataSys.GetCorsConfigXML(bucket)
 	if err != nil {
 		if errors.Is(err, errConfigNotFound) {
 			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrNoSuchCORSConfiguration), r.URL)
 			return
 		}
-		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
-		return
-	}
-
-	configData, err := xml.Marshal(config)
-	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
 	}
