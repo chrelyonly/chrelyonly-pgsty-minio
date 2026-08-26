@@ -1811,6 +1811,7 @@
     "cmd:cmd:field:CompleteMultipartUploadResponse.ChecksumCRC64NVME",
     "cmd:cmd:field:CompleteMultipartUploadResponse.ChecksumSHA1",
     "cmd:cmd:field:CompleteMultipartUploadResponse.ChecksumSHA256",
+    "cmd:cmd:field:CompleteMultipartUploadResponse.ChecksumType",
     "cmd:cmd:field:CompleteMultipartUploadResponse.ETag",
     "cmd:cmd:field:CompleteMultipartUploadResponse.Key",
     "cmd:cmd:field:CompleteMultipartUploadResponse.Location",

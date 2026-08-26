@@ -428,6 +428,7 @@ type CompleteMultipartUploadResponse struct {
 	Key      string
 	ETag     string
 
+	ChecksumType      string `xml:"ChecksumType,omitempty"`
 	ChecksumCRC32     string `xml:"ChecksumCRC32,omitempty"`
 	ChecksumCRC32C    string `xml:"ChecksumCRC32C,omitempty"`
 	ChecksumSHA1      string `xml:"ChecksumSHA1,omitempty"`
@@ -821,6 +822,7 @@ func generateCompleteMultipartUploadResponse(bucket, key, location string, oi Ob
 		Key:      key,
 		// AWS S3 quotes the ETag in XML, make sure we are compatible here.
 		ETag:              "\"" + oi.ETag + "\"",
+		ChecksumType:      cs[xhttp.AmzChecksumType],
 		ChecksumSHA1:      cs[hash.ChecksumSHA1.String()],
 		ChecksumSHA256:    cs[hash.ChecksumSHA256.String()],
 		ChecksumCRC32:     cs[hash.ChecksumCRC32.String()],
