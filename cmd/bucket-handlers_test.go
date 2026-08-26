@@ -24,11 +24,51 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"testing"
 
 	"github.com/minio/minio/internal/auth"
 )
+
+func TestListObjectsNonExistentBucketHandler(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{t: t, objAPITest: testListObjectsNonExistentBucketHandler})
+}
+
+func testListObjectsNonExistentBucketHandler(_ ObjectLayer, instanceType, _ string, apiRouter http.Handler,
+	credentials auth.Credentials, t *testing.T,
+) {
+	const bucket = "missing-bucket"
+	testCases := []struct {
+		name  string
+		query url.Values
+	}{
+		{name: "ListObjects", query: url.Values{"prefix": {"/"}}},
+		{name: "ListObjectsV2", query: url.Values{"list-type": {"2"}, "prefix": {"/"}}},
+		{name: "ListObjectVersions", query: url.Values{"versions": {""}, "prefix": {"/"}}},
+	}
+
+	for _, tc := range testCases {
+		req, err := newTestSignedRequestV4(http.MethodGet, makeTestTargetURL("", bucket, "", tc.query), 0, nil,
+			credentials.AccessKey, credentials.SecretKey, nil)
+		if err != nil {
+			t.Fatalf("%s: %s: failed to create request: %v", instanceType, tc.name, err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: %s: expected status %d, got %d", instanceType, tc.name, http.StatusNotFound, rec.Code)
+		}
+
+		var apiErr APIErrorResponse
+		if err = xml.Unmarshal(rec.Body.Bytes(), &apiErr); err != nil {
+			t.Fatalf("%s: %s: failed to decode error response: %v", instanceType, tc.name, err)
+		}
+		if apiErr.Code != "NoSuchBucket" {
+			t.Errorf("%s: %s: expected NoSuchBucket, got %q", instanceType, tc.name, apiErr.Code)
+		}
+	}
+}
 
 // Wrapper for calling RemoveBucket HTTP handler tests for both Erasure multiple disks and single node setup.
 func TestRemoveBucketHandler(t *testing.T) {
