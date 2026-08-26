@@ -2,18 +2,23 @@ module github.com/minio/minio
 
 go 1.27.0
 
-// Use Pigsty's SILO Console v2.1.1 release while preserving upstream import paths.
-// The pseudo-version pins v2.1.1's commit because the compatible module path has no /v2 suffix.
-replace github.com/minio/console => github.com/pgsty/silo-console v0.0.0-20260806061103-72fc0a5ea52a
+// Use PGSTY's maintained Silo Go SDK while preserving upstream import paths.
+// Keep the required version on a real upstream tag because replace directives
+// are ignored when this module is consumed as a dependency.
+replace github.com/minio/minio-go/v7 => github.com/pgsty/silo-go/v7 v7.3.1
+
+// Use Pigsty's SILO Console v2.2.1 release while preserving upstream import paths.
+// The pseudo-version pins v2.2.1's commit because the compatible module path has no /v2 suffix.
+replace github.com/minio/console => github.com/pgsty/silo-console v0.0.0-20260826175040-fc1299bbc175
 
 // Use Pigsty's maintained mc fork for Console's embedded client code.
-replace github.com/minio/mc => github.com/pgsty/mc v0.0.0-20260806055018-b0021fd01ccb
+replace github.com/minio/mc => github.com/pgsty/mc v0.0.0-20260826171527-70a2950478e1
 
 // Use Pigsty's maintained SILO package fork while preserving upstream import paths.
 // This retains the LDAP TLS fix tracked in https://github.com/pgsty/silo/issues/15.
-// v3.12.0 carries the minio/minio#20449 bucket-write boundary hardening and
-// rejects bare ARN prefixes on strict policy-write paths.
-replace github.com/minio/pkg/v3 => github.com/pgsty/silo-pkg/v3 v3.12.0
+// v3.12.2 retains the minio/minio#20449 bucket-write boundary hardening,
+// rejects bare ARN prefixes on strict policy-write paths, and selects Silo Go v7.3.1.
+replace github.com/minio/pkg/v3 => github.com/pgsty/silo-pkg/v3 v3.12.2
 
 // v22.7.0 does not compile on NetBSD because its unix implementation uses
 // CLOCK_MONOTONIC, which is unavailable there. Keep the last portable release
@@ -57,8 +62,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/inconshreveable/mousetrap v1.1.0
 	github.com/json-iterator/go v1.1.12
-	github.com/klauspost/compress v1.18.7
-	github.com/klauspost/cpuid/v2 v2.3.0
+	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/klauspost/filepathx v1.1.1
 	github.com/klauspost/pgzip v1.2.6
 	github.com/klauspost/readahead v1.4.0
@@ -75,9 +80,9 @@ require (
 	github.com/minio/kms-go/kes v0.3.1
 	github.com/minio/kms-go/kms v0.6.0
 	github.com/minio/madmin-go/v3 v3.0.110
-	github.com/minio/minio-go/v7 v7.0.99
+	github.com/minio/minio-go/v7 v7.3.0
 	github.com/minio/mux v1.9.2
-	github.com/minio/pkg/v3 v3.12.0
+	github.com/minio/pkg/v3 v3.6.1
 	github.com/minio/selfupdate v0.6.0
 	github.com/minio/simdjson-go v0.4.5
 	github.com/minio/sio v0.4.3
@@ -152,7 +157,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/harmonica v0.2.0 // indirect
 	github.com/charmbracelet/lipgloss v1.1.0 // indirect
-	github.com/charmbracelet/x/ansi v0.11.6 // indirect
+	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
@@ -171,7 +176,6 @@ require (
 	github.com/fatih/structs v1.1.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.8 // indirect
-	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -229,19 +233,19 @@ require (
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
-	github.com/lestrrat-go/dsig v1.0.0 // indirect
+	github.com/lestrrat-go/dsig v1.3.0 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
 	github.com/lestrrat-go/httprc/v3 v3.0.6 // indirect
 	github.com/lestrrat-go/jwx/v3 v3.0.13 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
-	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
+	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260216142805-b3301c5f2a88 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-ieproxy v0.0.12 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
-	github.com/mattn/go-runewidth v0.0.21 // indirect
+	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/minio/colorjson v1.0.8 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
@@ -298,7 +302,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	golang.org/x/exp v0.0.0-20260820142414-ca536658362e // indirect
 	golang.org/x/mod v0.40.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
@@ -308,4 +311,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/grpc v1.82.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
+	gopkg.in/ini.v1 v1.67.3 // indirect
 )
