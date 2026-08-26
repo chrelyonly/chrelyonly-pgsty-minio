@@ -1122,6 +1122,12 @@ func getRemoteInstanceTransport() http.RoundTripper {
 	return nil
 }
 
+// federatedInternalAppName is the minio-go application token that
+// getRemoteInstanceClient attaches to every legacy federation proxy request. It
+// is declared next to its only producer so that the literal keeps its historical
+// file attribution in the rebrand compatibility baseline.
+const federatedInternalAppName = "minio-federated"
+
 // Returns a minio-go Client configured to access remote host described by destDNSRecord
 // Applicable only in a federated deployment
 var getRemoteInstanceClient = func(r *http.Request, host string) (*miniogo.Core, error) {
@@ -1136,7 +1142,7 @@ var getRemoteInstanceClient = func(r *http.Request, host string) (*miniogo.Core,
 	if err != nil {
 		return nil, err
 	}
-	core.SetAppInfo("minio-federated", ReleaseTag)
+	core.SetAppInfo(federatedInternalAppName, ReleaseTag)
 	return core, nil
 }
 
@@ -1357,6 +1363,15 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	} // no changes in storage-class expected so its a metadataonly operation.
 
 	var reader io.Reader = gr
+	sourceCompressMetadata := make(map[string]string, 2)
+	for _, key := range []string{
+		ReservedMetadataPrefix + "compression",
+		ReservedMetadataPrefix + "actual-size",
+	} {
+		if value, ok := srcInfo.UserDefined[key]; ok {
+			sourceCompressMetadata[key] = value
+		}
+	}
 
 	// Set the actual size to the compressed/decrypted size if encrypted.
 	actualSize, err := srcInfo.GetActualSize()
@@ -1386,15 +1401,7 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		compressMetadata[ReservedMetadataPrefix+"actual-size"] = strconv.FormatInt(actualSize, 10)
 
 		reader = etag.NewReader(ctx, reader, nil, nil)
-		wantEncryption := crypto.Requested(r.Header)
-		s2c, cb := newS2CompressReader(reader, actualSize, wantEncryption)
-		dstOpts.IndexCB = cb
-		defer s2c.Close()
-		reader = etag.Wrap(s2c, reader)
-		length = -1
 	} else {
-		delete(srcInfo.UserDefined, ReservedMetadataPrefix+"compression")
-		delete(srcInfo.UserDefined, ReservedMetadataPrefix+"actual-size")
 		reader = gr
 	}
 
@@ -1541,6 +1548,23 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 			}
 		}
 
+		if isDstCompressed {
+			checksumReader := srcInfo.Reader
+			wantEncryption := crypto.Requested(r.Header)
+			s2c, cb := newS2CompressReader(checksumReader, actualSize, wantEncryption)
+			dstOpts.IndexCB = cb
+			defer s2c.Close()
+			reader = etag.Wrap(s2c, checksumReader)
+			srcInfo.Reader, err = hash.NewReader(ctx, reader, -1, "", "", actualSize)
+			if err != nil {
+				writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+				return
+			}
+			// The storage reader consumes compressed data; checksums remain bound to plaintext.
+			pReader = NewPutObjReader(srcInfo.Reader)
+			pReader.setChecksumReader(checksumReader)
+		}
+
 		if isTargetEncrypted {
 			var encReader io.Reader
 			kind, _ := crypto.IsRequested(r.Header)
@@ -1676,8 +1700,17 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		srcInfo.UserDefined[ReservedMetadataPrefixLower+ReplicationStatus] = dsc.PendingStatus()
 		srcInfo.UserDefined[ReservedMetadataPrefixLower+ReplicationTimestamp] = UTCNow().Format(time.RFC3339Nano)
 	}
-	// Store the preserved compression metadata.
-	maps.Copy(srcInfo.UserDefined, compressMetadata)
+	// Compression metadata must describe data that is actually rewritten.
+	if !srcInfo.metadataOnly || srcInfo.Legacy || dstOpts.WantServerSideChecksumType.IsSet() {
+		if isDstCompressed {
+			maps.Copy(srcInfo.UserDefined, compressMetadata)
+		} else {
+			delete(srcInfo.UserDefined, ReservedMetadataPrefix+"compression")
+			delete(srcInfo.UserDefined, ReservedMetadataPrefix+"actual-size")
+		}
+	} else {
+		maps.Copy(srcInfo.UserDefined, sourceCompressMetadata)
+	}
 
 	// We need to preserve the encryption headers set in EncryptRequest,
 	// so we do not want to override them, copy them instead.
@@ -1767,9 +1800,14 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 
 		copyObjectFn := objectAPI.CopyObject
 
+		copySrcOpts := srcOpts
+		if srcInfo.metadataOnly && dstOpts.Versioned && copySrcOpts.VersionID == "" {
+			copySrcOpts.VersionID = srcInfo.VersionID
+		}
+
 		// Copy source object to destination, if source and destination
 		// object is same then only metadata is updated.
-		objInfo, err = copyObjectFn(ctx, srcBucket, srcObject, dstBucket, dstObject, srcInfo, srcOpts, dstOpts)
+		objInfo, err = copyObjectFn(ctx, srcBucket, srcObject, dstBucket, dstObject, srcInfo, copySrcOpts, dstOpts)
 		if err != nil {
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 			return
@@ -1778,7 +1816,7 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 
 	origETag := objInfo.ETag
 	objInfo.ETag = getDecryptedETag(r.Header, objInfo, false)
-	response := generateCopyObjectResponse(objInfo.ETag, objInfo.ModTime)
+	response := generateCopyObjectResponse(objInfo, r.Header)
 	encodedSuccessResponse := encodeResponse(response)
 
 	if dsc := mustReplicate(ctx, dstBucket, dstObject, objInfo.getMustReplicateOptions(replication.ObjectReplicationType, dstOpts)); dsc.ReplicateAny() {

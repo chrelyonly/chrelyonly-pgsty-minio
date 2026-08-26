@@ -3396,7 +3396,7 @@ SOFTWARE.
 github.com/cheggaaa/pb
 https://github.com/cheggaaa/pb
 ----------------------------------------------------------------
-Copyright (c) 2012-2015, Sergey Cherepanov
+Copyright (c) 2012-2024, Sergey Cherepanov
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
@@ -16641,33 +16641,6 @@ SOFTWARE.
 
 ================================================================
 
-github.com/lestrrat-go/option
-https://github.com/lestrrat-go/option
-----------------------------------------------------------------
-MIT License
-
-Copyright (c) 2021 lestrrat-go
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================
-
 github.com/lestrrat-go/option/v2
 https://github.com/lestrrat-go/option/v2
 ----------------------------------------------------------------
@@ -21712,6 +21685,14 @@ The MinIO project contains unmodified/modified subcomponents too with
 separate copyright notices and license terms. Your use of the source
 code for the these subcomponents is subject to the terms and conditions
 of the following licenses.
+
+===
+
+This distribution (pgsty/mc, shipped as "mcli") is a community-maintained
+fork of the MinIO Client, modified by the Silo project
+(https://silo.pgsty.com/). It is not affiliated with, endorsed by, or
+sponsored by MinIO, Inc. Modifications are Copyright (c) 2025-2026 PGSTY
+and are licensed under the GNU AGPL v3.0 or later.
 
 ================================================================
 
@@ -28982,7 +28963,7 @@ https://go.etcd.io/etcd/api/v3
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright [yyyy] [name of copyright owner]
+   Copyright 2020 The etcd Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -29190,7 +29171,7 @@ https://go.etcd.io/etcd/client/pkg/v3
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright [yyyy] [name of copyright owner]
+   Copyright 2020 The etcd Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -29398,7 +29379,7 @@ https://go.etcd.io/etcd/client/v3
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright [yyyy] [name of copyright owner]
+   Copyright 2020 The etcd Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.

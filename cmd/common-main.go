@@ -36,6 +36,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/dustin/go-humanize"
 	fcolor "github.com/fatih/color"
@@ -540,6 +541,34 @@ func (e envKV) String() string {
 	return fmt.Sprintf("%s=%s", e.Key, e.Value)
 }
 
+func isValidEnvName(name string) bool {
+	if name == "" || !isEnvNameStart(name[0]) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if !isEnvNameStart(name[i]) && (name[i] < '0' || name[i] > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func isEnvNameStart(ch byte) bool {
+	return ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+}
+
+func trimExportPrefix(envEntry string) string {
+	rest, ok := strings.CutPrefix(envEntry, "export")
+	if !ok || rest == "" {
+		return envEntry
+	}
+	trimmed := strings.TrimLeftFunc(rest, unicode.IsSpace)
+	if len(trimmed) == len(rest) {
+		return envEntry
+	}
+	return trimmed
+}
+
 func parsEnvEntry(envEntry string) (envKV, error) {
 	envEntry = strings.TrimSpace(envEntry)
 	if envEntry == "" {
@@ -554,13 +583,19 @@ func parsEnvEntry(envEntry string) (envKV, error) {
 			Skip: true,
 		}, nil
 	}
-	envTokens := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(envEntry, "export")), config.EnvSeparator, 2)
+	envTokens := strings.SplitN(trimExportPrefix(envEntry), config.EnvSeparator, 2)
 	if len(envTokens) != 2 {
-		return envKV{}, fmt.Errorf("envEntry malformed; %s, expected to be of form 'KEY=value'", envEntry)
+		return envKV{}, errors.New("missing '='")
 	}
 
-	key := envTokens[0]
-	val := envTokens[1]
+	key := strings.TrimSpace(envTokens[0])
+	val := strings.TrimSpace(envTokens[1])
+	if !isValidEnvName(key) {
+		return envKV{}, fmt.Errorf("invalid environment variable name %q", key)
+	}
+	if strings.IndexByte(val, 0) >= 0 {
+		return envKV{}, errors.New("environment variable value contains NUL")
+	}
 
 	// Remove quotes from the value if found
 	if len(val) >= 2 {
@@ -587,10 +622,12 @@ func minioEnvironFromFile(envConfigFile string) ([]envKV, error) {
 	defer f.Close()
 	var ekvs []envKV
 	scanner := bufio.NewScanner(f)
+	lineNo := 0
 	for scanner.Scan() {
+		lineNo++
 		ekv, err := parsEnvEntry(scanner.Text())
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s:%d: %w", envConfigFile, lineNo, err)
 		}
 		if ekv.Skip {
 			// Skips empty lines
@@ -599,7 +636,7 @@ func minioEnvironFromFile(envConfigFile string) ([]envKV, error) {
 		ekvs = append(ekvs, ekv)
 	}
 	if err = scanner.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", envConfigFile, err)
 	}
 	return ekvs, nil
 }
@@ -666,12 +703,15 @@ func loadEnvVarsFromFiles() {
 	}
 
 	if env.IsSet(config.EnvConfigEnvFile) {
-		ekvs, err := minioEnvironFromFile(env.Get(config.EnvConfigEnvFile, ""))
+		envConfigFile := env.Get(config.EnvConfigEnvFile, "")
+		ekvs, err := minioEnvironFromFile(envConfigFile)
 		if err != nil && !os.IsNotExist(err) {
 			logger.Fatal(err, "Unable to read the config environment file")
 		}
 		for _, ekv := range ekvs {
-			os.Setenv(ekv.Key, ekv.Value)
+			if err := os.Setenv(ekv.Key, ekv.Value); err != nil {
+				logger.Fatal(err, "Unable to set %s from config environment file %s", ekv.Key, envConfigFile)
+			}
 		}
 	}
 }

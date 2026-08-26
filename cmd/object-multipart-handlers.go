@@ -55,6 +55,88 @@ import (
 
 // Multipart objectAPIHandlers
 
+// isFederatedInternalRequest reports whether User-Agent carries the minio-go
+// application token attached by getRemoteInstanceClient.
+//
+// This is only a response-shape hint. User-Agent is not authenticated and must
+// never gate authorization, object visibility, or request validation. It is
+// safe here because the only effect is returning the checksum of the body the
+// caller was already authorized to upload.
+func isFederatedInternalRequest(userAgent string) bool {
+	for _, product := range strings.Fields(userAgent) {
+		name, version, ok := strings.Cut(product, "/")
+		if ok && name == federatedInternalAppName && version != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// partChecksumMap returns the non-empty part checksums in the form expected by
+// hash.AddChecksumHeader. x-amz-checksum-type is deliberately excluded because
+// UploadPart does not return it and minio-go cannot carry it in ObjectPart.
+func partChecksumMap(partInfo PartInfo) map[string]string {
+	checksums := make(map[string]string, 1)
+	if partInfo.ChecksumCRC32 != "" {
+		checksums[hash.ChecksumCRC32.String()] = partInfo.ChecksumCRC32
+	}
+	if partInfo.ChecksumCRC32C != "" {
+		checksums[hash.ChecksumCRC32C.String()] = partInfo.ChecksumCRC32C
+	}
+	if partInfo.ChecksumSHA1 != "" {
+		checksums[hash.ChecksumSHA1.String()] = partInfo.ChecksumSHA1
+	}
+	if partInfo.ChecksumSHA256 != "" {
+		checksums[hash.ChecksumSHA256.String()] = partInfo.ChecksumSHA256
+	}
+	if partInfo.ChecksumCRC64NVME != "" {
+		checksums[hash.ChecksumCRC64NVME.String()] = partInfo.ChecksumCRC64NVME
+	}
+	return checksums
+}
+
+// multipartChecksumType returns the base checksum type recorded when a
+// multipart upload was created. The boolean reports whether an algorithm was
+// recorded at all.
+func multipartChecksumType(metadata map[string]string) (hash.ChecksumType, bool) {
+	algorithm := metadata[hash.MinIOMultipartChecksum]
+	if algorithm == "" {
+		return hash.ChecksumNone, false
+	}
+	t := hash.NewChecksumType(algorithm, metadata[hash.MinIOMultipartChecksumType])
+	if !t.IsSet() {
+		return t, true
+	}
+	return t.Base(), true
+}
+
+// prepareMultipartChecksumReader validates a supplied part checksum algorithm,
+// or installs a server-side hasher when the client omitted the optional
+// checksum. It must run before compression or encryption can consume reader.
+func prepareMultipartChecksumReader(reader *hash.Reader, metadata map[string]string, bucket, object string) error {
+	want, ok := multipartChecksumType(metadata)
+	if !ok {
+		return nil
+	}
+
+	got := reader.ContentCRCType()
+	if !got.IsSet() && reader.ServerSideChecksumType.IsSet() {
+		got = reader.ServerSideChecksumType
+	}
+	if !want.IsSet() || (got.IsSet() && got.Base() != want) {
+		return InvalidArgument{
+			Bucket: bucket,
+			Object: object,
+			Err: fmt.Errorf("checksum missing, want %q, got %q",
+				metadata[hash.MinIOMultipartChecksum], got.String()),
+		}
+	}
+	if !got.IsSet() {
+		reader.AddServerSideChecksumHasher(want)
+	}
+	return nil
+}
+
 // NewMultipartUploadHandler - New multipart upload.
 // Notice: The S3 client can send secret keys in headers for encryption related jobs,
 // the handler should ensure to remove these keys before sending them to the object layer.
@@ -465,7 +547,15 @@ func (api objectAPIHandlers) CopyObjectPartHandler(w http.ResponseWriter, r *htt
 			return
 		}
 
-		response := generateCopyObjectPartResponse(partInfo.ETag, partInfo.LastModified)
+		response := generateCopyObjectPartResponse(PartInfo{
+			ETag:              partInfo.ETag,
+			LastModified:      partInfo.LastModified,
+			ChecksumCRC32:     partInfo.ChecksumCRC32,
+			ChecksumCRC32C:    partInfo.ChecksumCRC32C,
+			ChecksumSHA1:      partInfo.ChecksumSHA1,
+			ChecksumSHA256:    partInfo.ChecksumSHA256,
+			ChecksumCRC64NVME: partInfo.ChecksumCRC64NVME,
+		})
 		encodedSuccessResponse := encodeResponse(response)
 
 		// Write success response.
@@ -475,11 +565,24 @@ func (api objectAPIHandlers) CopyObjectPartHandler(w http.ResponseWriter, r *htt
 
 	actualPartSize = length
 	var reader io.Reader = etag.NewReader(ctx, gr, nil, nil)
+	var checksumReader *hash.Reader
 
 	mi, err := objectAPI.GetMultipartInfo(ctx, dstBucket, dstObject, uploadID, dstOpts)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
+	}
+	if _, ok := multipartChecksumType(mi.UserDefined); ok {
+		checksumReader, err = hash.NewReader(ctx, reader, length, "", "", actualPartSize)
+		if err != nil {
+			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+		if err = prepareMultipartChecksumReader(checksumReader, mi.UserDefined, dstBucket, dstObject); err != nil {
+			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+		reader = checksumReader
 	}
 
 	_, isEncrypted := crypto.IsEncrypted(mi.UserDefined)
@@ -512,6 +615,7 @@ func (api objectAPIHandlers) CopyObjectPartHandler(w http.ResponseWriter, r *htt
 
 	rawReader := srcInfo.Reader
 	pReader := NewPutObjReader(rawReader)
+	pReader.setChecksumReader(checksumReader)
 
 	var objectEncryptionKey crypto.ObjectKey
 	if isEncrypted {
@@ -591,7 +695,7 @@ func (api objectAPIHandlers) CopyObjectPartHandler(w http.ResponseWriter, r *htt
 		partInfo.ETag = tryDecryptETag(objectEncryptionKey[:], partInfo.ETag, sseS3)
 	}
 
-	response := generateCopyObjectPartResponse(partInfo.ETag, partInfo.LastModified)
+	response := generateCopyObjectPartResponse(partInfo)
 	encodedSuccessResponse := encodeResponse(response)
 
 	// Write success response.
@@ -745,6 +849,7 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 	// Read compression metadata preserved in the init multipart for the decision.
 	_, isCompressed := mi.UserDefined[ReservedMetadataPrefix+"compression"]
 	var idxCb func() []byte
+	var checksumReader *hash.Reader
 	if isCompressed {
 		actualReader, err := hash.NewReader(ctx, reader, size, md5hex, sha256hex, actualSize)
 		if err != nil {
@@ -755,6 +860,11 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidChecksum), r.URL)
 			return
 		}
+		if err = prepareMultipartChecksumReader(actualReader, mi.UserDefined, bucket, object); err != nil {
+			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+		checksumReader = actualReader
 
 		// Set compression metrics.
 		wantEncryption := crypto.Requested(r.Header)
@@ -791,8 +901,16 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidChecksum), r.URL)
 		return
 	}
+	if checksumReader == nil {
+		if err = prepareMultipartChecksumReader(hashReader, mi.UserDefined, bucket, object); err != nil {
+			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+		checksumReader = hashReader
+	}
 
 	pReader := NewPutObjReader(hashReader)
+	pReader.setChecksumReader(checksumReader)
 
 	_, isEncrypted := crypto.IsEncrypted(mi.UserDefined)
 	_, replicationStatus := mi.UserDefined[xhttp.AmzBucketReplicationStatus]
@@ -918,6 +1036,13 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 	// Therefore, we have to set the ETag directly as map entry.
 	w.Header()[xhttp.ETag] = []string{"\"" + etag + "\""}
 	hash.TransferChecksumHeader(w, r)
+	if isFederatedInternalRequest(r.UserAgent()) {
+		// Legacy federation proxies UploadPartCopy through minio-go
+		// Core.PutObjectPart, which can only recover checksums from response
+		// headers. Use the PartInfo returned by this exact write so the ETag and
+		// checksum cannot be mixed with a concurrent overwrite.
+		hash.AddChecksumHeader(w, partChecksumMap(partInfo))
+	}
 
 	writeSuccessResponseHeadersOnly(w)
 }

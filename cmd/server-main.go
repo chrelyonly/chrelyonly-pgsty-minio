@@ -48,6 +48,7 @@ import (
 	"github.com/minio/minio/internal/color"
 	"github.com/minio/minio/internal/config"
 	"github.com/minio/minio/internal/config/api"
+	"github.com/minio/minio/internal/config/notify"
 	"github.com/minio/minio/internal/handlers"
 	"github.com/minio/minio/internal/hash/sha256"
 	xhttp "github.com/minio/minio/internal/http"
@@ -535,6 +536,15 @@ func configRetriableErrors(err error) bool {
 		notInitialized
 }
 
+func fatalServerConfigError(err error) bool {
+	var configErr config.Err
+	if errors.As(err, &configErr) {
+		return true
+	}
+	var migrationErr *notify.LegacyDatabaseTargetError
+	return errors.As(err, &migrationErr)
+}
+
 func bootstrapTraceMsg(msg string) {
 	info := madmin.TraceInfo{
 		TraceType: madmin.TraceBootstrap,
@@ -632,7 +642,10 @@ func initConfigSubsystem(ctx context.Context, newObject ObjectLayer) error {
 
 	// Initialize config system.
 	if err := globalConfigSys.Init(newObject); err != nil {
-		if configRetriableErrors(err) {
+		var migrationErr *notify.LegacyDatabaseTargetError
+		// Do not use fatalServerConfigError here: existing config.Err values
+		// retain the historical log-and-continue behavior at this boundary.
+		if configRetriableErrors(err) || errors.As(err, &migrationErr) {
 			return fmt.Errorf("Unable to initialize config system: %w", err)
 		}
 
@@ -965,10 +978,9 @@ func serverMain(ctx *cli.Context) {
 	var err error
 	bootstrapTrace("initServerConfig", func() {
 		if err = initServerConfig(GlobalContext, newObject); err != nil {
-			var cerr config.Err
 			// For any config error, we don't need to drop into safe-mode
 			// instead its a user error and should be fixed by user.
-			if errors.As(err, &cerr) {
+			if fatalServerConfigError(err) {
 				logger.FatalIf(err, "Unable to initialize the server")
 			}
 
