@@ -398,17 +398,24 @@ func (a adminAPIHandlers) SetGroupStatus(w http.ResponseWriter, r *http.Request)
 }
 
 // SetUserStatus - PUT /minio/admin/v3/set-user-status?accessKey=<access_key>&status=[enabled|disabled]
+func setUserStatusAdminAction(status string) policy.AdminAction {
+	if madmin.AccountStatus(status) == madmin.AccountDisabled {
+		return policy.DisableUserAdminAction
+	}
+	return policy.EnableUserAdminAction
+}
+
 func (a adminAPIHandlers) SetUserStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-
-	objectAPI, creds := validateAdminReq(ctx, w, r, policy.EnableUserAdminAction)
-	if objectAPI == nil {
-		return
-	}
 
 	vars := mux.Vars(r)
 	accessKey := vars["accessKey"]
 	status := vars["status"]
+
+	objectAPI, creds := validateAdminReq(ctx, w, r, setUserStatusAdminAction(status))
+	if objectAPI == nil {
+		return
+	}
 
 	// you cannot enable or disable yourself.
 	if accessKey == creds.AccessKey {

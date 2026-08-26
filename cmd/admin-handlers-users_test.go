@@ -41,11 +41,32 @@ import (
 	"github.com/minio/minio-go/v7/pkg/signer"
 	"github.com/minio/minio/internal/auth"
 	"github.com/minio/pkg/v3/env"
+	"github.com/minio/pkg/v3/policy"
 )
 
 const (
 	testDefaultTimeout = 30 * time.Second
 )
+
+func TestSetUserStatusAdminAction(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   policy.AdminAction
+	}{
+		{name: "enable", status: string(madmin.AccountEnabled), want: policy.EnableUserAdminAction},
+		{name: "disable", status: string(madmin.AccountDisabled), want: policy.DisableUserAdminAction},
+		{name: "invalid preserves authenticated default", status: "invalid", want: policy.EnableUserAdminAction},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := setUserStatusAdminAction(tt.status); got != tt.want {
+				t.Fatalf("setUserStatusAdminAction(%q) = %q, want %q", tt.status, got, tt.want)
+			}
+		})
+	}
+}
 
 // API suite container for IAM
 type TestSuiteIAM struct {
@@ -202,6 +223,7 @@ func TestIAMInternalIDPServerSuite(t *testing.T) {
 
 				suite.SetUpSuite(c)
 				suite.TestUserCreate(c)
+				suite.TestUserStatusActionAuthorization(c)
 				suite.TestUserPolicyEscalationBug(c)
 				suite.TestPolicyCreate(c)
 				suite.TestServiceAccountBareARNPolicyRejected(c)
@@ -310,6 +332,84 @@ func (s *TestSuiteIAM) TestUserCreate(c *check) {
 	err = client.MakeBucket(ctx, getRandomBucketName(), minio.MakeBucketOptions{})
 	if err == nil {
 		c.Fatalf("user account was not deleted!")
+	}
+}
+
+func (s *TestSuiteIAM) TestUserStatusActionAuthorization(c *check) {
+	ctx, cancel := context.WithTimeout(context.Background(), testDefaultTimeout)
+	defer cancel()
+
+	var createdUsers []string
+	var createdPolicies []string
+	defer func() {
+		for _, user := range createdUsers {
+			if err := s.adm.RemoveUser(ctx, user); err != nil {
+				c.Errorf("unable to remove test user %s: %v", user, err)
+			}
+		}
+		for _, policyName := range createdPolicies {
+			if err := s.adm.RemoveCannedPolicy(ctx, policyName); err != nil {
+				c.Errorf("unable to remove test policy %s: %v", policyName, err)
+			}
+		}
+	}()
+
+	createUser := func() (string, string) {
+		accessKey, secretKey := mustGenerateCredentials(c)
+		if err := s.adm.SetUser(ctx, accessKey, secretKey, madmin.AccountEnabled); err != nil {
+			c.Fatalf("unable to create test user: %v", err)
+		}
+		createdUsers = append(createdUsers, accessKey)
+		return accessKey, secretKey
+	}
+
+	createStatusClient := func(action policy.AdminAction) *madmin.AdminClient {
+		accessKey, secretKey := createUser()
+		policyName := getRandomBucketName()
+		policyBytes := fmt.Appendf(nil, `{
+ "Version": "2012-10-17",
+ "Statement": [{
+  "Effect": "Allow",
+  "Action": ["%s"]
+ }]
+}`, action)
+		if err := s.adm.AddCannedPolicy(ctx, policyName, policyBytes); err != nil {
+			c.Fatalf("unable to add status policy: %v", err)
+		}
+		createdPolicies = append(createdPolicies, policyName)
+		if _, err := s.adm.AttachPolicy(ctx, madmin.PolicyAssociationReq{
+			Policies: []string{policyName},
+			User:     accessKey,
+		}); err != nil {
+			c.Fatalf("unable to attach status policy: %v", err)
+		}
+
+		client, err := madmin.NewWithOptions(s.endpoint, &madmin.Options{
+			Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+			Secure: s.secure,
+		})
+		if err != nil {
+			c.Fatalf("unable to create status admin client: %v", err)
+		}
+		client.SetCustomTransport(s.TestSuiteCommon.client.Transport)
+		return client
+	}
+
+	targetAccessKey, _ := createUser()
+	disableClient := createStatusClient(policy.DisableUserAdminAction)
+	if err := disableClient.SetUserStatus(ctx, targetAccessKey, madmin.AccountDisabled); err != nil {
+		c.Fatalf("DisableUser-only client could not disable a user: %v", err)
+	}
+	if err := disableClient.SetUserStatus(ctx, targetAccessKey, madmin.AccountEnabled); err == nil || madmin.ToErrorResponse(err).Code != "AccessDenied" {
+		c.Fatalf("DisableUser-only client unexpectedly enabled a user: %v", err)
+	}
+
+	enableClient := createStatusClient(policy.EnableUserAdminAction)
+	if err := enableClient.SetUserStatus(ctx, targetAccessKey, madmin.AccountEnabled); err != nil {
+		c.Fatalf("EnableUser-only client could not enable a user: %v", err)
+	}
+	if err := enableClient.SetUserStatus(ctx, targetAccessKey, madmin.AccountDisabled); err == nil || madmin.ToErrorResponse(err).Code != "AccessDenied" {
+		c.Fatalf("EnableUser-only client unexpectedly disabled a user: %v", err)
 	}
 }
 
