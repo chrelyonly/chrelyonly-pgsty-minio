@@ -69,6 +69,14 @@ func (api objectAPIHandlers) PutBucketCorsHandler(w http.ResponseWriter, r *http
 		return
 	}
 
+	// PutBucketCors requires a Content-Md5 (or a supported trailing/full
+	// checksum). validateLengthAndChecksum wraps r.Body so the supplied
+	// digest is verified as the body is read below.
+	if !validateLengthAndChecksum(r) {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMissingContentMD5), r.URL)
+		return
+	}
+
 	corsBytes, err := io.ReadAll(io.LimitReader(r.Body, r.ContentLength))
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)

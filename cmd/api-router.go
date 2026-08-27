@@ -679,7 +679,11 @@ func applyBucketCors(w http.ResponseWriter, r *http.Request, cfg *bktcors.Config
 			h.Set("Access-Control-Max-Age", strconv.Itoa(rule.MaxAgeSeconds))
 		}
 		h.Set("Access-Control-Allow-Credentials", "true")
+		// A preflight response depends on all three request headers that
+		// determine the outcome, so cache variation must key on each of them.
 		h.Add("Vary", "Origin")
+		h.Add("Vary", "Access-Control-Request-Method")
+		h.Add("Vary", "Access-Control-Request-Headers")
 		writeResponse(w, http.StatusOK, nil, mimeNone)
 		return true
 	}

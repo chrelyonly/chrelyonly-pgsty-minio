@@ -53,10 +53,13 @@ func TestParseAndValidate(t *testing.T) {
 
 func TestValidateRejections(t *testing.T) {
 	cases := map[string]string{
-		"bad method":   `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>TRACE</AllowedMethod></CORSRule></CORSConfiguration>`,
-		"no origin":    `<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
-		"no method":    `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin></CORSRule></CORSConfiguration>`,
-		"negative age": `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><MaxAgeSeconds>-1</MaxAgeSeconds></CORSRule></CORSConfiguration>`,
+		"bad method":            `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>TRACE</AllowedMethod></CORSRule></CORSConfiguration>`,
+		"no origin":             `<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
+		"no method":             `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin></CORSRule></CORSConfiguration>`,
+		"negative age":          `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><MaxAgeSeconds>-1</MaxAgeSeconds></CORSRule></CORSConfiguration>`,
+		"multi wildcard origin": `<CORSConfiguration><CORSRule><AllowedOrigin>https://*.*.example.com</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
+		"multi wildcard header": `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedHeader>x-*-*</AllowedHeader></CORSRule></CORSConfiguration>`,
+		"overlong id":           `<CORSConfiguration><CORSRule><ID>` + strings.Repeat("a", 256) + `</ID><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
 	}
 	for name, doc := range cases {
 		c, err := ParseBucketCorsConfig(strings.NewReader(doc))

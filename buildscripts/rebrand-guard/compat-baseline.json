@@ -4037,6 +4037,7 @@
     "cmd:cmd:method:SiteReplicationSys.Netperf",
     "cmd:cmd:method:SiteReplicationSys.PeerAddPolicyHandler",
     "cmd:cmd:method:SiteReplicationSys.PeerBucketConfigureReplHandler",
+    "cmd:cmd:method:SiteReplicationSys.PeerBucketCorsConfigHandler",
     "cmd:cmd:method:SiteReplicationSys.PeerBucketDeleteHandler",
     "cmd:cmd:method:SiteReplicationSys.PeerBucketLCConfigHandler",
     "cmd:cmd:method:SiteReplicationSys.PeerBucketMakeWithVersioningHandler",

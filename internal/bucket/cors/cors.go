@@ -31,6 +31,9 @@ import (
 // maxCORSRules is the maximum number of rules allowed per bucket (AWS S3 limit).
 const maxCORSRules = 100
 
+// maxCORSRuleIDLen is the maximum length of a CORSRule <ID> (AWS S3 limit).
+const maxCORSRuleIDLen = 255
+
 // supportedMethods are the HTTP methods permitted in an AllowedMethod element.
 var supportedMethods = map[string]bool{
 	"GET":    true,
@@ -74,15 +77,28 @@ func (c *Config) Validate() error {
 		return errors.New("CORSConfiguration exceeds the maximum number of rules")
 	}
 	for _, r := range c.CORSRules {
+		if len(r.ID) > maxCORSRuleIDLen {
+			return errors.New("CORSRule ID exceeds the maximum length of 255 characters")
+		}
 		if len(r.AllowedOrigins) == 0 {
 			return errors.New("CORSRule must contain at least one AllowedOrigin")
 		}
 		if len(r.AllowedMethods) == 0 {
 			return errors.New("CORSRule must contain at least one AllowedMethod")
 		}
+		for _, o := range r.AllowedOrigins {
+			if strings.Count(o, "*") > 1 {
+				return errors.New("AllowedOrigin may contain at most one wildcard '*': " + o)
+			}
+		}
 		for _, m := range r.AllowedMethods {
 			if !supportedMethods[strings.ToUpper(m)] {
 				return errors.New("unsupported method in CORSRule: " + m)
+			}
+		}
+		for _, h := range r.AllowedHeaders {
+			if strings.Count(h, "*") > 1 {
+				return errors.New("AllowedHeader may contain at most one wildcard '*': " + h)
 			}
 		}
 		if r.MaxAgeSeconds < 0 {
