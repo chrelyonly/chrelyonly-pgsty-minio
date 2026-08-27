@@ -4,6 +4,14 @@ This document summarizes fork-specific security fixes and closely related upgrad
 
 Entries carry a CVE identifier where one exists. Where none does, they carry a fork-local `SN-<year>-<sequence>` identifier so that a finding without a CVE can still be referenced stably from release notes, commits and issues. An `SN-` identifier is **not** a CVE and is not registered in any vulnerability database; it is deliberately not written in CVE form so that scanners do not mistake it for one. Upstream `minio/minio` is archived, so for findings in inherited code there is no upstream maintainer to coordinate a CVE assignment with. `SN-2026-001` is the streaming-flush regression in `trackingResponseWriter`, which is a reliability defect rather than a security one and is tracked in the release notes rather than here.
 
+## Inherited upstream advisory baseline
+
+The first Silo community release was cut from upstream history that already contained the following security fix. Upstream and Silo links are both recorded even when the fork preserves the same commit object and SHA; that identity is the inheritance evidence, not a claim that Silo independently reimplemented the patch.
+
+| ID | Upstream remediation | Silo inheritance | Regression evidence | Release / operator note |
+| :-- | :-- | :-- | :-- | :-- |
+| [CVE-2025-62506](https://github.com/advisories/GHSA-jjjj-jwhf-8rgr) | [minio/minio#21642](https://github.com/minio/minio/pull/21642), merged as [`c1a49490`](https://github.com/minio/minio/commit/c1a49490c78e9c3ebcad86ba0662319138ace190) | The same commit object is present as [`pgsty/silo@c1a49490`](https://github.com/pgsty/silo/commit/c1a49490c78e9c3ebcad86ba0662319138ace190) | The inherited [service-account](https://github.com/pgsty/silo/blob/c1a49490c78e9c3ebcad86ba0662319138ace190/cmd/admin-handlers-users_test.go#L211-L212) and [STS](https://github.com/pgsty/silo/blob/c1a49490c78e9c3ebcad86ba0662319138ace190/cmd/sts-handlers_test.go#L45-L46) regression groups run for root and non-root parents through `go test ./cmd` | Resets `DenyOnly` while evaluating a restricted session policy so service or STS accounts cannot mint an unrestricted child service account. Upstream first fixed this in [`RELEASE.2025-10-15T17-29-55Z`](https://github.com/minio/minio/releases/tag/RELEASE.2025-10-15T17-29-55Z); every Silo community release, beginning with [`RELEASE.2025-12-03T12-00-00Z`](https://github.com/pgsty/silo/releases/tag/RELEASE.2025-12-03T12-00-00Z), contains it. Operators migrating from an older upstream build should upgrade and audit service accounts created by restricted service or STS identities. |
+
 ## Advisories since `RELEASE.2026-03-21T00-00-00Z`
 
 | ID | Fixed by | Affected area | Remote exploitability | Summary | Upgrade / workaround notes |
