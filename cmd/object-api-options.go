@@ -473,6 +473,7 @@ func completeMultipartOpts(ctx context.Context, r *http.Request, bucket, object 
 	if err != nil {
 		return opts, err
 	}
+	opts.wantChecksumTypeSet = r.Header.Get(xhttp.AmzChecksumType) != ""
 	opts.MTime = mtime
 	opts.UserDefined = make(map[string]string)
 	// Transfer SSEC key in opts.EncryptFn

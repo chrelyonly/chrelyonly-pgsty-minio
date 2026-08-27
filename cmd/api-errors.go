@@ -2169,6 +2169,10 @@ func toAPIErrorCode(ctx context.Context, err error) (apiErr APIErrorCode) {
 	err = unwrapAll(err)
 
 	switch err {
+	case errCompleteMultipartChecksumMismatch, errCompleteMultipartChecksumTypeMismatch:
+		apiErr = ErrBadDigest
+	case errMissingPartChecksum:
+		apiErr = ErrInvalidRequest
 	case errInvalidArgument:
 		apiErr = ErrAdminInvalidArgument
 	case errNoSuchPolicy:
@@ -2465,6 +2469,14 @@ func toAPIError(ctx context.Context, err error) APIError {
 	}
 
 	apiErr := errorCodes.ToAPIErr(toAPIErrorCode(ctx, err))
+	switch {
+	case errors.Is(err, errCompleteMultipartChecksumMismatch):
+		apiErr.Description = strings.TrimPrefix(err.Error(), errCompleteMultipartChecksumMismatch.Error()+": ")
+	case errors.Is(err, errCompleteMultipartChecksumTypeMismatch):
+		apiErr.Description = strings.TrimPrefix(err.Error(), errCompleteMultipartChecksumTypeMismatch.Error()+": ")
+	case errors.Is(err, errMissingPartChecksum):
+		apiErr.Description = strings.TrimPrefix(err.Error(), errMissingPartChecksum.Error()+": ")
+	}
 	switch apiErr.Code {
 	case "NotImplemented":
 		apiErr = APIError{
