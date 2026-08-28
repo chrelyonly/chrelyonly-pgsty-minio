@@ -77,7 +77,7 @@ func (api objectAPIHandlers) PutBucketCorsHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	corsBytes, err := io.ReadAll(io.LimitReader(r.Body, r.ContentLength))
+	corsBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
@@ -97,7 +97,7 @@ func (api objectAPIHandlers) PutBucketCorsHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	updatedAt, err := globalBucketMetadataSys.Update(ctx, bucket, bucketCorsConfig, corsBytes)
+	updatedAt, err := updateLocalBucketCORSMetadata(ctx, objAPI, bucket, corsBytes)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
@@ -181,7 +181,7 @@ func (api objectAPIHandlers) DeleteBucketCorsHandler(w http.ResponseWriter, r *h
 		return
 	}
 
-	updatedAt, err := globalBucketMetadataSys.Delete(ctx, bucket, bucketCorsConfig)
+	updatedAt, err := updateLocalBucketCORSMetadata(ctx, objAPI, bucket, nil)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return

@@ -18,6 +18,7 @@
 package cmd
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strconv"
@@ -657,6 +658,8 @@ func applyBucketCors(w http.ResponseWriter, r *http.Request, cfg *bktcors.Config
 	if origin == "" {
 		return false // not a CORS request
 	}
+	h := w.Header()
+	h.Add("Vary", "Origin")
 
 	isPreflight := r.Method == http.MethodOptions &&
 		r.Header.Get("Access-Control-Request-Method") != ""
@@ -664,43 +667,50 @@ func applyBucketCors(w http.ResponseWriter, r *http.Request, cfg *bktcors.Config
 	if isPreflight {
 		method := r.Header.Get("Access-Control-Request-Method")
 		reqHeaders := splitAndTrim(r.Header.Get("Access-Control-Request-Headers"))
-		rule, allowedHeaders, ok := cfg.MatchPreflight(origin, method, reqHeaders)
+		// A preflight response depends on all three request headers that
+		// determine the outcome, including when the request is rejected.
+		h.Add("Vary", "Access-Control-Request-Method")
+		h.Add("Vary", "Access-Control-Request-Headers")
+		rule, allowedOrigin, allowedHeaders, ok := cfg.MatchPreflight(origin, method, reqHeaders)
 		if !ok {
 			writeResponse(w, http.StatusForbidden, nil, mimeNone)
 			return true
 		}
-		h := w.Header()
-		h.Set("Access-Control-Allow-Origin", origin)
+		setBucketCorsOriginHeaders(h, allowedOrigin, origin)
 		h.Set("Access-Control-Allow-Methods", method)
 		if len(allowedHeaders) > 0 {
 			h.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
 		}
+		if len(rule.ExposeHeaders) > 0 {
+			h.Set("Access-Control-Expose-Headers", strings.Join(rule.ExposeHeaders, ", "))
+		}
 		if rule.MaxAgeSeconds > 0 {
 			h.Set("Access-Control-Max-Age", strconv.Itoa(rule.MaxAgeSeconds))
 		}
-		h.Set("Access-Control-Allow-Credentials", "true")
-		// A preflight response depends on all three request headers that
-		// determine the outcome, so cache variation must key on each of them.
-		h.Add("Vary", "Origin")
-		h.Add("Vary", "Access-Control-Request-Method")
-		h.Add("Vary", "Access-Control-Request-Headers")
 		writeResponse(w, http.StatusOK, nil, mimeNone)
 		return true
 	}
 
 	// Actual request: attach headers if the origin+method match.
-	rule, ok := cfg.MatchRule(origin, r.Method)
+	rule, allowedOrigin, ok := cfg.MatchRule(origin, r.Method)
 	if !ok {
 		return false // no matching rule → no CORS headers, continue normally
 	}
-	h := w.Header()
-	h.Set("Access-Control-Allow-Origin", origin)
-	h.Set("Access-Control-Allow-Credentials", "true")
+	setBucketCorsOriginHeaders(h, allowedOrigin, origin)
 	if len(rule.ExposeHeaders) > 0 {
 		h.Set("Access-Control-Expose-Headers", strings.Join(rule.ExposeHeaders, ", "))
 	}
-	h.Add("Vary", "Origin")
 	return false
+}
+
+func setBucketCorsOriginHeaders(h http.Header, allowedOrigin, requestOrigin string) {
+	if allowedOrigin == "*" {
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Del("Access-Control-Allow-Credentials")
+		return
+	}
+	h.Set("Access-Control-Allow-Origin", requestOrigin)
+	h.Set("Access-Control-Allow-Credentials", "true")
 }
 
 // splitAndTrim splits a comma-separated header list into trimmed, non-empty values.
@@ -766,10 +776,16 @@ func corsHandler(handler http.Handler) http.Handler {
 	globalCors := cors.New(opts).Handler(handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if bucket, _ := request2BucketObjectName(r); bucket != "" && globalBucketMetadataSys != nil {
-			if cfg, _, err := globalBucketMetadataSys.GetCorsConfig(bucket); err == nil && cfg != nil {
+			cfg, _, err := globalBucketMetadataSys.GetCorsConfig(bucket)
+			if err == nil && cfg != nil {
 				if applyBucketCors(w, r, cfg) {
 					return
 				}
+				handler.ServeHTTP(w, r)
+				return
+			}
+			if err != nil && !errors.Is(err, errConfigNotFound) && r.Header.Get("Origin") != "" {
+				internalLogOnceIf(r.Context(), err, "bucket-cors-metadata")
 				handler.ServeHTTP(w, r)
 				return
 			}

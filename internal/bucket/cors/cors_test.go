@@ -55,10 +55,13 @@ func TestValidateRejections(t *testing.T) {
 	cases := map[string]string{
 		"bad method":            `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>TRACE</AllowedMethod></CORSRule></CORSConfiguration>`,
 		"no origin":             `<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
+		"empty origin":          `<CORSConfiguration><CORSRule><AllowedOrigin></AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
 		"no method":             `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin></CORSRule></CORSConfiguration>`,
 		"negative age":          `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><MaxAgeSeconds>-1</MaxAgeSeconds></CORSRule></CORSConfiguration>`,
 		"multi wildcard origin": `<CORSConfiguration><CORSRule><AllowedOrigin>https://*.*.example.com</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
 		"multi wildcard header": `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedHeader>x-*-*</AllowedHeader></CORSRule></CORSConfiguration>`,
+		"question mark origin":  `<CORSConfiguration><CORSRule><AllowedOrigin>https://?.example.com</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
+		"question mark header":  `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedHeader>x-amz-?</AllowedHeader></CORSRule></CORSConfiguration>`,
 		"overlong id":           `<CORSConfiguration><CORSRule><ID>` + strings.Repeat("a", 256) + `</ID><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
 	}
 	for name, doc := range cases {
@@ -74,14 +77,14 @@ func TestValidateRejections(t *testing.T) {
 
 func TestMatching(t *testing.T) {
 	c, _ := ParseBucketCorsConfig(strings.NewReader(sampleCORS))
-	rule, ok := c.MatchRule("https://api.example.org", "GET")
+	rule, _, ok := c.MatchRule("https://api.example.org", "GET")
 	if !ok {
 		t.Fatal("expected origin+method to match")
 	}
-	if _, ok := c.MatchRule("http://evil.com", "GET"); ok {
+	if _, _, ok := c.MatchRule("http://evil.com", "GET"); ok {
 		t.Fatal("did not expect match for disallowed origin")
 	}
-	if _, ok := c.MatchRule("http://www.example.com", "DELETE"); ok {
+	if _, _, ok := c.MatchRule("http://www.example.com", "DELETE"); ok {
 		t.Fatal("did not expect match for disallowed method")
 	}
 	allowed, ok := rule.FilterAllowedHeaders([]string{"x-amz-date", "x-amz-content-sha256"})
@@ -118,7 +121,7 @@ func TestMatchPreflightFallsThroughToLaterRule(t *testing.T) {
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	rule, allowed, ok := c.MatchPreflight("https://app.example.com", "GET", []string{"x-custom-header"})
+	rule, _, allowed, ok := c.MatchPreflight("https://app.example.com", "GET", []string{"x-custom-header"})
 	if !ok {
 		t.Fatal("expected MatchPreflight to succeed via the later, permissive rule")
 	}
@@ -127,5 +130,28 @@ func TestMatchPreflightFallsThroughToLaterRule(t *testing.T) {
 	}
 	if len(allowed) != 1 || allowed[0] != "x-custom-header" {
 		t.Fatalf("unexpected allowed headers: %v", allowed)
+	}
+}
+
+func TestMatchAllowedOriginReturnsFirstMatchingPattern(t *testing.T) {
+	rule := Rule{AllowedOrigins: []string{"https://app.example.com", "https://*", "*"}}
+
+	tests := []struct {
+		origin string
+		want   string
+	}{
+		{"https://app.example.com", "https://app.example.com"},
+		{"https://other.example.com", "https://*"},
+		{"http://other.example.com", "*"},
+	}
+
+	for _, tt := range tests {
+		got, ok := rule.matchAllowedOrigin(tt.origin)
+		if !ok {
+			t.Fatalf("expected %q to match", tt.origin)
+		}
+		if got != tt.want {
+			t.Fatalf("origin %q matched %q, want %q", tt.origin, got, tt.want)
+		}
 	}
 }

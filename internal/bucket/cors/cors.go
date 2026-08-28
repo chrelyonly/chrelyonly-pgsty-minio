@@ -87,6 +87,12 @@ func (c *Config) Validate() error {
 			return errors.New("CORSRule must contain at least one AllowedMethod")
 		}
 		for _, o := range r.AllowedOrigins {
+			if o == "" {
+				return errors.New("AllowedOrigin must not be empty")
+			}
+			if strings.Contains(o, "?") {
+				return errors.New("AllowedOrigin may not contain wildcard '?': " + o)
+			}
 			if strings.Count(o, "*") > 1 {
 				return errors.New("AllowedOrigin may contain at most one wildcard '*': " + o)
 			}
@@ -97,6 +103,9 @@ func (c *Config) Validate() error {
 			}
 		}
 		for _, h := range r.AllowedHeaders {
+			if strings.Contains(h, "?") {
+				return errors.New("AllowedHeader may not contain wildcard '?': " + h)
+			}
 			if strings.Count(h, "*") > 1 {
 				return errors.New("AllowedHeader may contain at most one wildcard '*': " + h)
 			}
@@ -108,14 +117,19 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// HasAllowedOrigin reports whether the rule allows the given origin.
-func (r Rule) HasAllowedOrigin(origin string) bool {
+func (r Rule) matchAllowedOrigin(origin string) (string, bool) {
 	for _, o := range r.AllowedOrigins {
 		if o == "*" || wildcard.MatchSimple(o, origin) {
-			return true
+			return o, true
 		}
 	}
-	return false
+	return "", false
+}
+
+// HasAllowedOrigin reports whether the rule allows the given origin.
+func (r Rule) HasAllowedOrigin(origin string) bool {
+	_, ok := r.matchAllowedOrigin(origin)
+	return ok
 }
 
 // HasAllowedMethod reports whether the rule allows the given HTTP method.
@@ -154,15 +168,17 @@ func (r Rule) headerAllowed(header string) bool {
 	return false
 }
 
-// MatchRule returns the first rule whose origin and method both match.
-func (c *Config) MatchRule(origin, method string) (*Rule, bool) {
+// MatchRule returns the first rule whose origin and method both match, along
+// with the configured origin pattern that matched.
+func (c *Config) MatchRule(origin, method string) (rule *Rule, allowedOrigin string, ok bool) {
 	for i := range c.CORSRules {
 		r := &c.CORSRules[i]
-		if r.HasAllowedOrigin(origin) && r.HasAllowedMethod(method) {
-			return r, true
+		matchedOrigin, originOK := r.matchAllowedOrigin(origin)
+		if originOK && r.HasAllowedMethod(method) {
+			return r, matchedOrigin, true
 		}
 	}
-	return nil, false
+	return nil, "", false
 }
 
 // MatchPreflight returns the first rule whose origin and method match and
@@ -170,17 +186,18 @@ func (c *Config) MatchRule(origin, method string) (*Rule, bool) {
 // this keeps evaluating subsequent rules until one fully satisfies the
 // preflight request, since an earlier origin/method match with a more
 // restrictive header list must not shadow a later, more permissive rule.
-func (c *Config) MatchPreflight(origin, method string, reqHeaders []string) (rule *Rule, allowedHeaders []string, ok bool) {
+func (c *Config) MatchPreflight(origin, method string, reqHeaders []string) (rule *Rule, allowedOrigin string, allowedHeaders []string, ok bool) {
 	for i := range c.CORSRules {
 		r := &c.CORSRules[i]
-		if !r.HasAllowedOrigin(origin) || !r.HasAllowedMethod(method) {
+		matchedOrigin, originOK := r.matchAllowedOrigin(origin)
+		if !originOK || !r.HasAllowedMethod(method) {
 			continue
 		}
 		allowed, headersOK := r.FilterAllowedHeaders(reqHeaders)
 		if !headersOK {
 			continue
 		}
-		return r, allowed, true
+		return r, matchedOrigin, allowed, true
 	}
-	return nil, nil, false
+	return nil, "", nil, false
 }
