@@ -387,6 +387,44 @@ func testAPICopyObjectServerSideChecksumEncryption(obj ObjectLayer, instanceType
 				}
 			})
 		}
+
+		oldKey := bytes.Repeat([]byte{0x31}, 32)
+		oldKeyMD5 := md5.Sum(oldKey)
+		newKey := bytes.Repeat([]byte{0x42}, 32)
+		newKeyMD5 := md5.Sum(newKey)
+		encryptedSource := "copy-checksum/sse-c-different-key-source.bin"
+		putCopyChecksumSource(t, apiRouter, credentials, bucketName, encryptedSource, data, map[string]string{
+			xhttp.AmzServerSideEncryptionCustomerAlgorithm: xhttp.AmzEncryptionAES,
+			xhttp.AmzServerSideEncryptionCustomerKey:       base64.StdEncoding.EncodeToString(oldKey),
+			xhttp.AmzServerSideEncryptionCustomerKeyMD5:    base64.StdEncoding.EncodeToString(oldKeyMD5[:]),
+		})
+
+		destination := "copy-checksum/sse-c-different-key-destination.bin"
+		rec := copyChecksumRequest(t, apiRouter, credentials, bucketName, encryptedSource, destination, map[string]string{
+			xhttp.AmzChecksumAlgo:                              hash.ChecksumCRC32.String(),
+			xhttp.AmzServerSideEncryptionCustomerAlgorithm:     xhttp.AmzEncryptionAES,
+			xhttp.AmzServerSideEncryptionCustomerKey:           base64.StdEncoding.EncodeToString(newKey),
+			xhttp.AmzServerSideEncryptionCustomerKeyMD5:        base64.StdEncoding.EncodeToString(newKeyMD5[:]),
+			xhttp.AmzServerSideEncryptionCopyCustomerAlgorithm: xhttp.AmzEncryptionAES,
+			xhttp.AmzServerSideEncryptionCopyCustomerKey:       base64.StdEncoding.EncodeToString(oldKey),
+			xhttp.AmzServerSideEncryptionCopyCustomerKeyMD5:    base64.StdEncoding.EncodeToString(oldKeyMD5[:]),
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: different-key SSE-C CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
+		}
+		assertCopyChecksumResponse(t, rec, hash.ChecksumCRC32, data)
+		if got, want := rec.Header().Get(hash.ChecksumCRC32.Key()), mustChecksum(t, hash.ChecksumCRC32, data); got != want {
+			t.Fatalf("%s: different-key SSE-C response header checksum %q, want %q", instanceType, got, want)
+		}
+		if got := rec.Header().Get(xhttp.AmzChecksumType); got != xhttp.AmzChecksumTypeFullObject {
+			t.Fatalf("%s: different-key SSE-C response checksum type %q, want %q", instanceType, got, xhttp.AmzChecksumTypeFullObject)
+		}
+		newKeyHeaders := http.Header{
+			xhttp.AmzServerSideEncryptionCustomerAlgorithm: []string{xhttp.AmzEncryptionAES},
+			xhttp.AmzServerSideEncryptionCustomerKey:       []string{base64.StdEncoding.EncodeToString(newKey)},
+			xhttp.AmzServerSideEncryptionCustomerKeyMD5:    []string{base64.StdEncoding.EncodeToString(newKeyMD5[:])},
+		}
+		assertCopyChecksum(t, obj, bucketName, destination, hash.ChecksumCRC32, data, false, newKeyHeaders)
 	})
 }
 

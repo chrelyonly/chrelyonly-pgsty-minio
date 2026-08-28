@@ -150,6 +150,7 @@ func testAPICopyObjectSSECKeyRotationKeepsCompressionState(obj ObjectLayer, inst
 	newMD5 := md5.Sum(newKey)
 
 	putCopyChecksumSource(t, apiRouter, credentials, bucketName, object, data, map[string]string{
+		xhttp.AmzChecksumCRC32:                         mustChecksum(t, hash.ChecksumCRC32, data),
 		xhttp.AmzServerSideEncryptionCustomerAlgorithm: xhttp.AmzEncryptionAES,
 		xhttp.AmzServerSideEncryptionCustomerKey:       base64.StdEncoding.EncodeToString(oldKey),
 		xhttp.AmzServerSideEncryptionCustomerKeyMD5:    base64.StdEncoding.EncodeToString(oldMD5[:]),
@@ -172,6 +173,7 @@ func testAPICopyObjectSSECKeyRotationKeepsCompressionState(obj ObjectLayer, inst
 	if rec.Code != http.StatusOK {
 		t.Fatalf("%s: key rotation failed: %d %s", instanceType, rec.Code, rec.Body.String())
 	}
+	assertCopyChecksumResponse(t, rec, hash.ChecksumCRC32, data)
 	after, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
 	if err != nil {
 		t.Fatal(err)
