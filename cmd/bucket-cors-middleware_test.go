@@ -313,9 +313,30 @@ func testBucketCorsSkipsMetadataLookupWithoutOrigin(obj ObjectLayer, _ string, _
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
+	requireCorsOriginVary(t, rec.Header())
 	if got := counting.getObjectNInfoCalls.Load(); got != 0 {
 		t.Fatalf("request without Origin performed %d bucket metadata reads", got)
 	}
+}
+
+func TestBucketCorsOriginlessPreflightShapeUsesGlobalHandler(t *testing.T) {
+	nextCalled := false
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, getGetObjectURL("", "api", "v1/login"), nil)
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if nextCalled {
+		t.Fatal("originless preflight-shaped OPTIONS reached the application handler")
+	}
+	requireCorsOriginVary(t, rec.Header())
 }
 
 func TestBucketCorsNoConfigUsesGlobalFallback(t *testing.T) {

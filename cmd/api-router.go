@@ -785,23 +785,21 @@ func corsHandler(handler http.Handler) http.Handler {
 	}
 	globalCors := cors.New(opts).Handler(handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Origin") == "" {
-			handler.ServeHTTP(w, r)
-			return
-		}
-		if bucket, _ := request2BucketObjectName(r); bucket != "" && globalBucketMetadataSys != nil {
-			cfg, _, err := globalBucketMetadataSys.GetCorsConfig(bucket)
-			if err == nil && cfg != nil {
-				if applyBucketCors(w, r, cfg) {
+		if r.Header.Get("Origin") != "" {
+			if bucket, _ := request2BucketObjectName(r); bucket != "" && globalBucketMetadataSys != nil {
+				cfg, _, err := globalBucketMetadataSys.GetCorsConfig(bucket)
+				if err == nil && cfg != nil {
+					if applyBucketCors(w, r, cfg) {
+						return
+					}
+					handler.ServeHTTP(w, r)
 					return
 				}
-				handler.ServeHTTP(w, r)
-				return
-			}
-			if err != nil && !errors.Is(err, errConfigNotFound) && r.Header.Get("Origin") != "" {
-				internalLogOnceIf(r.Context(), err, "bucket-cors-metadata")
-				handler.ServeHTTP(w, r)
-				return
+				if err != nil && !errors.Is(err, errConfigNotFound) {
+					internalLogOnceIf(r.Context(), err, "bucket-cors-metadata")
+					handler.ServeHTTP(w, r)
+					return
+				}
 			}
 		}
 		globalCors.ServeHTTP(w, r)
