@@ -58,4 +58,22 @@ func testAPIPutObjectRejectsCRC64Composite(obj ObjectLayer, instanceType, bucket
 	if _, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{}); !isErrObjectNotFound(err) {
 		t.Fatalf("%s: rejected PutObject stored an object: %v", instanceType, err)
 	}
+
+	trailerObject := "checksums/crc64-composite-trailer"
+	req, err = newTestSignedRequestV4(http.MethodPut, getPutObjectURL("", bucketName, trailerObject),
+		int64(len(data)), bytes.NewReader(data), credentials.AccessKey, credentials.SecretKey, map[string]string{
+			xhttp.AmzTrailer:      xhttp.AmzChecksumCRC64NVME,
+			xhttp.AmzChecksumType: xhttp.AmzChecksumTypeComposite,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	apiRouter.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || apiErrorCode(t, rec) != "InvalidArgument" {
+		t.Fatalf("%s: trailing CRC64NVME/COMPOSITE PutObject returned %d %s", instanceType, rec.Code, rec.Body.String())
+	}
+	if _, err := obj.GetObjectInfo(t.Context(), bucketName, trailerObject, ObjectOptions{}); !isErrObjectNotFound(err) {
+		t.Fatalf("%s: rejected trailing PutObject stored an object: %v", instanceType, err)
+	}
 }

@@ -150,6 +150,16 @@ func TestChecksumAddToHeader(t *testing.T) {
 	}
 }
 
+func TestCRC64NVMECompositeTrailerIsInvalid(t *testing.T) {
+	h := http.Header{}
+	h.Set(xhttp.AmzTrailer, ChecksumCRC64NVME.Key())
+	h.Set(xhttp.AmzChecksumType, xhttp.AmzChecksumTypeComposite)
+	_, err := GetContentChecksum(h)
+	if !errors.Is(err, ErrInvalidChecksum) {
+		t.Fatalf("CRC64NVME/COMPOSITE trailer error = %v, want ErrInvalidChecksum", err)
+	}
+}
+
 // TestChecksumSerializeDeserialize checks AppendTo can be reversed by ChecksumFromBytes
 func TestChecksumSerializeDeserialize(t *testing.T) {
 	myData := []byte("this-is-a-checksum-data-test")

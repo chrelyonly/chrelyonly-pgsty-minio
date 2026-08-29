@@ -716,7 +716,11 @@ func GetContentChecksum(h http.Header) (*Checksum, error) {
 					return nil, ErrInvalidChecksum
 				}
 				res.Type |= ChecksumFullObject
-			case xhttp.AmzChecksumTypeComposite, "":
+			case xhttp.AmzChecksumTypeComposite:
+				if res.Type.Base().Is(ChecksumCRC64NVME) {
+					return nil, ErrInvalidChecksum
+				}
+			case "":
 			default:
 				return nil, ErrInvalidChecksum
 			}
