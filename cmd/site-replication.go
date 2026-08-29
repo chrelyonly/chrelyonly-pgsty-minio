@@ -43,6 +43,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/replication"
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio/internal/auth"
+	"github.com/minio/minio/internal/bucket/cors"
 	"github.com/minio/minio/internal/bucket/lifecycle"
 	sreplication "github.com/minio/minio/internal/bucket/replication"
 	"github.com/minio/minio/internal/logger"
@@ -1577,12 +1578,33 @@ func (c *SiteReplicationSys) PeerBucketMetadataUpdateHandler(ctx context.Context
 		return wrapSRErr(errInvalidArgument)
 	}
 
+	var corsConfigData []byte
+	if item.Cors != nil {
+		var err error
+		corsConfigData, err = decodeCORSReplicationPayload(item.Cors)
+		if err != nil {
+			return wrapSRErr(err)
+		}
+		if err = validateCORSReplicationPayload(corsConfigData); err != nil {
+			return wrapSRErr(err)
+		}
+		var unlock func()
+		ctx, unlock, err = lockBucketCORSMetadata(ctx, objectAPI, item.Bucket)
+		if err != nil {
+			return wrapSRErr(err)
+		}
+		defer unlock()
+	}
+
 	meta, err := readBucketMetadata(ctx, objectAPI, item.Bucket)
 	if err != nil {
 		return wrapSRErr(err)
 	}
 
 	if meta.Created.After(item.UpdatedAt) {
+		if item.Cors != nil {
+			replLogOnceIf(ctx, fmt.Errorf("ignoring CORS event for bucket %s from %v before bucket creation at %v", item.Bucket, item.UpdatedAt, meta.Created), "cors-event-before-bucket-creation-"+item.Bucket)
+		}
 		return nil
 	}
 
@@ -1633,12 +1655,12 @@ func (c *SiteReplicationSys) PeerBucketMetadataUpdateHandler(ctx context.Context
 	}
 
 	if item.Cors != nil {
-		configData, err := base64.StdEncoding.DecodeString(*item.Cors)
-		if err != nil {
-			return wrapSRErr(err)
+		localState := newCORSReplicationState(meta.CorsConfigXML, meta.CorsConfigUpdatedAt)
+		incoming := newCORSReplicationState(corsConfigData, item.UpdatedAt)
+		if compareCORSReplicationStates(localState, incoming) < 0 {
+			meta.CorsConfigXML = bytes.Clone(corsConfigData)
+			meta.CorsConfigUpdatedAt = item.UpdatedAt
 		}
-		meta.CorsConfigXML = configData
-		meta.CorsConfigUpdatedAt = item.UpdatedAt
 	}
 
 	return globalBucketMetadataSys.save(ctx, meta)
@@ -1758,30 +1780,222 @@ func (c *SiteReplicationSys) PeerBucketSSEConfigHandler(ctx context.Context, buc
 	return nil
 }
 
-// PeerBucketCorsConfigHandler - copies/deletes CORS config to local cluster.
-func (c *SiteReplicationSys) PeerBucketCorsConfigHandler(ctx context.Context, bucket string, corsConfig *string, updatedAt time.Time) error {
-	// skip overwrite if local update is newer than peer update.
-	if !updatedAt.IsZero() {
-		if _, updateTm, err := globalBucketMetadataSys.GetCorsConfig(bucket); err == nil && updateTm.After(updatedAt) {
-			return nil
-		}
-	}
+type corsReplicationStateKind uint8
 
-	if corsConfig != nil {
-		configData, err := base64.StdEncoding.DecodeString(*corsConfig)
-		if err != nil {
-			return wrapSRErr(err)
-		}
-		_, err = globalBucketMetadataSys.Update(ctx, bucket, bucketCorsConfig, configData)
-		if err != nil {
-			return wrapSRErr(err)
-		}
+const (
+	corsReplicationBaseline corsReplicationStateKind = iota
+	corsReplicationLive
+	corsReplicationTombstone
+)
+
+type corsReplicationState struct {
+	kind      corsReplicationStateKind
+	payload   []byte
+	updatedAt time.Time
+}
+
+func newCORSReplicationState(payload []byte, updatedAt time.Time) corsReplicationState {
+	state := corsReplicationState{updatedAt: updatedAt.UTC()}
+	switch {
+	case len(payload) > 0:
+		state.kind = corsReplicationLive
+		state.payload = bytes.Clone(payload)
+	case updatedAt.IsZero():
+		state.kind = corsReplicationBaseline
+	default:
+		state.kind = corsReplicationTombstone
+	}
+	return state
+}
+
+func compareCORSReplicationStates(a, b corsReplicationState) int {
+	switch {
+	case a.updatedAt.Before(b.updatedAt):
+		return -1
+	case a.updatedAt.After(b.updatedAt):
+		return 1
+	case a.kind < b.kind:
+		return -1
+	case a.kind > b.kind:
+		return 1
+	case a.kind == corsReplicationLive:
+		return bytes.Compare(a.payload, b.payload)
+	default:
+		return 0
+	}
+}
+
+func equalCORSReplicationStates(a, b corsReplicationState) bool {
+	return compareCORSReplicationStates(a, b) == 0
+}
+
+func decodeCORSReplicationPayload(encoded *string) ([]byte, error) {
+	if encoded == nil {
+		return nil, nil
+	}
+	payload, err := base64.StdEncoding.Strict().DecodeString(*encoded)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CORS replication payload: %w", err)
+	}
+	if len(payload) == 0 || base64.StdEncoding.EncodeToString(payload) != *encoded {
+		return nil, fmt.Errorf("invalid CORS replication payload: %w", errInvalidArgument)
+	}
+	return payload, nil
+}
+
+func validateCORSReplicationPayload(payload []byte) error {
+	if payload == nil {
 		return nil
 	}
-
-	// Delete cors config
-	_, err := globalBucketMetadataSys.Delete(ctx, bucket, bucketCorsConfig)
+	config, err := cors.ParseBucketCorsConfig(bytes.NewReader(payload))
 	if err != nil {
+		return fmt.Errorf("invalid CORS replication payload: %w", errInvalidArgument)
+	}
+	if err = config.Validate(); err != nil {
+		return fmt.Errorf("invalid CORS replication payload: %w: %v", errInvalidArgument, err)
+	}
+	return nil
+}
+
+func corsReplicationStateFromInfo(info madmin.SRBucketInfo) (corsReplicationState, error) {
+	payload, err := decodeCORSReplicationPayload(info.CorsConfig)
+	if err != nil {
+		return corsReplicationState{}, err
+	}
+	if err = validateCORSReplicationPayload(payload); err != nil {
+		return corsReplicationState{}, err
+	}
+	if info.CorsConfig != nil && info.CorsConfigUpdatedAt.IsZero() {
+		return corsReplicationState{}, fmt.Errorf("live CORS replication payload has no source timestamp: %w", errInvalidArgument)
+	}
+	return newCORSReplicationState(payload, info.CorsConfigUpdatedAt), nil
+}
+
+func areCORSReplicationStatesEqual(sites []srBucketMetaInfo) bool {
+	if len(sites) == 0 {
+		return true
+	}
+	reference, err := corsReplicationStateFromInfo(sites[0].SRBucketInfo)
+	if err != nil {
+		return false
+	}
+	for _, site := range sites[1:] {
+		state, err := corsReplicationStateFromInfo(site.SRBucketInfo)
+		if err != nil || !equalCORSReplicationStates(reference, state) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s corsReplicationState) encodedPayload() *string {
+	if s.kind != corsReplicationLive {
+		return nil
+	}
+	encoded := base64.StdEncoding.EncodeToString(s.payload)
+	return &encoded
+}
+
+func newBucketCORSReplicationEvent(bucket string, meta BucketMetadata) (madmin.SRBucketMeta, bool) {
+	if meta.CorsConfigUpdatedAt.IsZero() {
+		return madmin.SRBucketMeta{}, false
+	}
+	return madmin.SRBucketMeta{
+		Type:      madmin.SRBucketMetaTypeCorsConfig,
+		Bucket:    bucket,
+		Cors:      newCORSReplicationState(meta.CorsConfigXML, meta.CorsConfigUpdatedAt).encodedPayload(),
+		UpdatedAt: meta.CorsConfigUpdatedAt,
+	}, true
+}
+
+func lockBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string) (context.Context, func(), error) {
+	// The lock name is deliberately different from .metadata.bin. Saving the
+	// metadata locks that object internally, and namespace locks are not
+	// re-entrant.
+	lock := objectAPI.NewNSLock(minioMetaBucket, pathJoin(bucketMetaPrefix, bucket, "cors-config.lock"))
+	lkctx, err := lock.GetLock(ctx, globalOperationTimeout)
+	if err != nil {
+		return nil, nil, err
+	}
+	return lkctx.Context(), func() { lock.Unlock(lkctx) }, nil
+}
+
+func updateLocalBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string, configData []byte) (time.Time, error) {
+	return applyBucketCORSMetadata(ctx, objectAPI, bucket, configData, time.Time{}, true)
+}
+
+func applyBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string, configData []byte, sourceUpdatedAt time.Time, local bool) (time.Time, error) {
+	if bucket == "" || (configData != nil && len(configData) == 0) {
+		return time.Time{}, errInvalidArgument
+	}
+	if err := validateCORSReplicationPayload(configData); err != nil {
+		return time.Time{}, err
+	}
+
+	ctx, unlock, err := lockBucketCORSMetadata(ctx, objectAPI, bucket)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer unlock()
+
+	var meta BucketMetadata
+	if local {
+		meta, err = loadBucketMetadataParse(ctx, objectAPI, bucket, true)
+	} else {
+		meta, err = readBucketMetadata(ctx, objectAPI, bucket)
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	localState := newCORSReplicationState(meta.CorsConfigXML, meta.CorsConfigUpdatedAt)
+	updatedAt := sourceUpdatedAt.UTC()
+	if local {
+		updatedAt = UTCNow()
+		floor := meta.Created
+		if localState.updatedAt.After(floor) {
+			floor = localState.updatedAt
+		}
+		if !updatedAt.After(floor) {
+			updatedAt = floor.Add(time.Nanosecond)
+		}
+	} else {
+		// CreatedAt is the bucket-lineage floor: an event from an older
+		// incarnation of the bucket must not change the current one.
+		if updatedAt.Before(meta.Created) {
+			replLogOnceIf(ctx, fmt.Errorf("ignoring CORS event for bucket %s from %v before bucket creation at %v", bucket, updatedAt, meta.Created), "cors-event-before-bucket-creation-"+bucket)
+			return localState.updatedAt, nil
+		}
+		incoming := newCORSReplicationState(configData, updatedAt)
+		if compareCORSReplicationStates(localState, incoming) >= 0 {
+			return localState.updatedAt, nil
+		}
+	}
+
+	meta.CorsConfigXML = bytes.Clone(configData)
+	meta.CorsConfigUpdatedAt = updatedAt
+	if err = globalBucketMetadataSys.save(ctx, meta); err != nil {
+		return time.Time{}, err
+	}
+	return updatedAt, nil
+}
+
+// PeerBucketCorsConfigHandler - copies/deletes CORS config to local cluster.
+func (c *SiteReplicationSys) PeerBucketCorsConfigHandler(ctx context.Context, bucket string, corsConfig *string, updatedAt time.Time) error {
+	objectAPI := newObjectLayerFn()
+	if objectAPI == nil {
+		return errSRObjectLayerNotReady
+	}
+
+	if bucket == "" || updatedAt.IsZero() {
+		return wrapSRErr(errInvalidArgument)
+	}
+
+	configData, err := decodeCORSReplicationPayload(corsConfig)
+	if err != nil {
+		return wrapSRErr(err)
+	}
+	if _, err = applyBucketCORSMetadata(ctx, objectAPI, bucket, configData, updatedAt, false); err != nil {
 		return wrapSRErr(err)
 	}
 	return nil
@@ -1989,15 +2203,8 @@ func (c *SiteReplicationSys) syncToAllPeers(ctx context.Context, addOpts madmin.
 		}
 
 		// Replicate existing bucket CORS settings
-		corsConfigData, tm := meta.CorsConfigXML, meta.CorsConfigUpdatedAt
-		if len(corsConfigData) > 0 {
-			corsConfigStr := base64.StdEncoding.EncodeToString(corsConfigData)
-			err = c.BucketMetaHook(ctx, madmin.SRBucketMeta{
-				Type:      madmin.SRBucketMetaTypeCorsConfig,
-				Bucket:    bucket,
-				Cors:      &corsConfigStr,
-				UpdatedAt: tm,
-			})
+		if corsEvent, ok := newBucketCORSReplicationEvent(bucket, meta); ok {
+			err = c.BucketMetaHook(ctx, corsEvent)
 			if err != nil {
 				return errSRBucketMetaError(err)
 			}
@@ -3198,7 +3405,6 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 			replCfgs := make([]*sreplication.Config, numSites)
 			quotaCfgs := make([]*madmin.BucketQuota, numSites)
 			sseCfgSet := set.NewStringSet()
-			corsCfgSet := set.NewStringSet()
 			versionCfgSet := set.NewStringSet()
 			var tagCount, olockCfgCount, sseCfgCount, corsCfgCount, versionCfgCount int
 			for i, s := range slc {
@@ -3272,13 +3478,8 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 					}
 				}
 				if s.CorsConfig != nil {
-					configData, err := base64.StdEncoding.DecodeString(*s.CorsConfig)
-					if err != nil {
-						continue
-					}
-					corsCfgCount++
-					if !corsCfgSet.Contains(string(configData)) {
-						corsCfgSet.Add(string(configData))
+					if _, err := decodeCORSReplicationPayload(s.CorsConfig); err == nil {
+						corsCfgCount++
 					}
 				}
 				ss, ok := info.StatsSummary[s.DeploymentID]
@@ -3299,7 +3500,7 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 				if sseCfgCount > 0 {
 					ss.TotalSSEConfigCount++
 				}
-				if corsCfgCount > 0 {
+				if s.CorsConfig != nil {
 					ss.TotalCorsConfigCount++
 				}
 				if versionCfgCount > 0 {
@@ -3313,7 +3514,7 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 			tagMismatch := !isReplicated(tagCount, numSites, tagSet)
 			olockCfgMismatch := !isReplicated(olockCfgCount, numSites, olockConfigSet)
 			sseCfgMismatch := !isReplicated(sseCfgCount, numSites, sseCfgSet)
-			corsCfgMismatch := !isReplicated(corsCfgCount, numSites, corsCfgSet)
+			corsCfgMismatch := !areCORSReplicationStatesEqual(slc)
 			versionCfgMismatch := !isReplicated(versionCfgCount, numSites, versionCfgSet)
 			policyMismatch := !isBktPolicyReplicated(numSites, policies)
 			replCfgMismatch := !isBktReplCfgReplicated(numSites, replCfgs)
@@ -3783,10 +3984,10 @@ func (c *SiteReplicationSys) SiteReplicationMetaInfo(ctx context.Context, objAPI
 				bms.SSEConfigUpdatedAt = meta.EncryptionConfigUpdatedAt
 			}
 
+			bms.CorsConfigUpdatedAt = meta.CorsConfigUpdatedAt
 			if len(meta.CorsConfigXML) > 0 {
 				corsConfigStr := base64.StdEncoding.EncodeToString(meta.CorsConfigXML)
 				bms.CorsConfig = &corsConfigStr
-				bms.CorsConfigUpdatedAt = meta.CorsConfigUpdatedAt
 			}
 
 			if len(meta.ReplicationConfigXML) > 0 {
@@ -4997,62 +5198,45 @@ func (c *SiteReplicationSys) healSSEMetadata(ctx context.Context, objAPI ObjectL
 	return nil
 }
 
+func latestCORSConfig(bs map[string]srBucketStatsSummary) (latestID string, latest corsReplicationState, ok bool) {
+	for dID, status := range bs {
+		state, err := corsReplicationStateFromInfo(status.meta.SRBucketInfo)
+		if err != nil || state.kind == corsReplicationBaseline {
+			continue
+		}
+		cmp := compareCORSReplicationStates(latest, state)
+		if !ok || cmp < 0 || (cmp == 0 && dID > latestID) {
+			latestID = dID
+			latest = state
+			ok = true
+		}
+	}
+	return latestID, latest, ok
+}
+
 func (c *SiteReplicationSys) healCORSMetadata(ctx context.Context, objAPI ObjectLayer, bucket string, info srStatusInfo) error {
 	c.RLock()
 	defer c.RUnlock()
 	if !c.enabled {
 		return nil
 	}
-	var (
-		latestID, latestPeerName string
-		lastUpdate               time.Time
-		latestCorsConfig         *string
-	)
 
 	bs := info.BucketStats[bucket]
-	for dID, ss := range bs {
-		if lastUpdate.IsZero() {
-			lastUpdate = ss.meta.CorsConfigUpdatedAt
-			latestID = dID
-			latestCorsConfig = ss.meta.CorsConfig
-		}
-		// avoid considering just created buckets as latest. Perhaps this site
-		// just joined cluster replication and yet to be sync'd
-		if ss.meta.CreatedAt.Equal(ss.meta.CorsConfigUpdatedAt) {
-			continue
-		}
-		if ss.meta.CorsConfigUpdatedAt.After(lastUpdate) {
-			lastUpdate = ss.meta.CorsConfigUpdatedAt
-			latestID = dID
-			latestCorsConfig = ss.meta.CorsConfig
-		}
+	latestID, latestState, ok := latestCORSConfig(bs)
+	if !ok {
+		return nil
 	}
 
-	latestPeerName = info.Sites[latestID].Name
-	var latestCorsConfigBytes []byte
-	var err error
-	if latestCorsConfig != nil {
-		latestCorsConfigBytes, err = base64.StdEncoding.DecodeString(*latestCorsConfig)
-		if err != nil {
-			return err
-		}
-	}
+	latestPeerName := info.Sites[latestID].Name
+	latestCorsConfig := latestState.encodedPayload()
 
 	for dID, bStatus := range bs {
-		if !bStatus.CorsCfgMismatch {
-			continue
-		}
-		if isBucketMetadataEqual(latestCorsConfig, bStatus.meta.CorsConfig) {
+		currentState, err := corsReplicationStateFromInfo(bStatus.meta.SRBucketInfo)
+		if err == nil && equalCORSReplicationStates(latestState, currentState) {
 			continue
 		}
 		if dID == globalDeploymentID() {
-			if latestCorsConfig == nil {
-				if _, err := globalBucketMetadataSys.Delete(ctx, bucket, bucketCorsConfig); err != nil {
-					replLogIf(ctx, fmt.Errorf("Unable to heal CORS metadata from peer site %s : %w", latestPeerName, err))
-				}
-				continue
-			}
-			if _, err := globalBucketMetadataSys.Update(ctx, bucket, bucketCorsConfig, latestCorsConfigBytes); err != nil {
+			if err := c.PeerBucketCorsConfigHandler(ctx, bucket, latestCorsConfig, latestState.updatedAt); err != nil {
 				replLogIf(ctx, fmt.Errorf("Unable to heal CORS metadata from peer site %s : %w", latestPeerName, err))
 			}
 			continue
@@ -5067,7 +5251,7 @@ func (c *SiteReplicationSys) healCORSMetadata(ctx context.Context, objAPI Object
 			Type:      madmin.SRBucketMetaTypeCorsConfig,
 			Bucket:    bucket,
 			Cors:      latestCorsConfig,
-			UpdatedAt: lastUpdate,
+			UpdatedAt: latestState.updatedAt,
 		})
 		if err != nil {
 			replLogIf(ctx, c.annotatePeerErr(peerName, replicateBucketMetadata,
@@ -5394,7 +5578,7 @@ func isBucketMetadataEqual(one, two *string) bool {
 	case one == nil || two == nil:
 		return false
 	default:
-		return strings.EqualFold(*one, *two)
+		return *one == *two
 	}
 }
 

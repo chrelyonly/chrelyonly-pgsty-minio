@@ -98,6 +98,38 @@ func testBucketCorsHandlers(obj ObjectLayer, instanceType, bucketName string, ap
 		t.Fatalf("PUT malformed cors: expected 400, got %d", rec.Code)
 	}
 
+	// Missing Content-MD5 is rejected before the body is parsed.
+	req, err = newTestRequest(http.MethodPut, getBucketCorsURL("", bucketName),
+		int64(len(testCORSDoc)), bytes.NewReader([]byte(testCORSDoc)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Del("Content-Md5")
+	if err = signRequestV4(req, creds.AccessKey, creds.SecretKey); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	apiRouter.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("<Code>MissingContentMD5</Code>")) {
+		t.Fatalf("PUT cors without Content-MD5: expected MissingContentMD5, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// A signed but incorrect Content-MD5 is rejected while reading the body.
+	req, err = newTestRequest(http.MethodPut, getBucketCorsURL("", bucketName),
+		int64(len(testCORSDoc)), bytes.NewReader([]byte(testCORSDoc)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Md5", getMD5HashBase64([]byte("different body")))
+	if err = signRequestV4(req, creds.AccessKey, creds.SecretKey); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	apiRouter.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("<Code>BadDigest</Code>")) {
+		t.Fatalf("PUT cors with bad Content-MD5: expected BadDigest, got %d: %s", rec.Code, rec.Body.String())
+	}
+
 	// Re-PUT the config so the store→GetCorsConfig→enforce seam below has
 	// something to enforce (the earlier DELETE removed it).
 	req, err = newTestSignedRequestV4(http.MethodPut, getBucketCorsURL("", bucketName),

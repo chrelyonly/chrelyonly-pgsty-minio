@@ -20,8 +20,10 @@ package cmd
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/minio/minio/internal/auth"
 	"github.com/minio/minio/internal/bucket/cors"
 )
 
@@ -38,6 +40,7 @@ func TestPerBucketCorsPreflight(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/mybucket/obj", nil)
 	req.Header.Set("Origin", "http://example.com")
 	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Headers", "X-Amz-Date")
 
 	handled := applyBucketCors(rec, req, cfg)
 	if !handled {
@@ -46,9 +49,44 @@ func TestPerBucketCorsPreflight(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://example.com" {
 		t.Fatalf("allow-origin = %q", got)
 	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("allow-credentials = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET, PUT" {
+		t.Fatalf("allow-methods = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "X-Amz-Date" {
+		t.Fatalf("allow-headers = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "ETag" {
+		t.Fatalf("expose-headers = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Max-Age"); got != "3000" {
+		t.Fatalf("max-age = %q", got)
+	}
+	requireCorsVary(t, rec.Header())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("preflight status = %d", rec.Code)
 	}
+	requireCorsOriginVary(t, rec.Header())
+}
+
+func TestPerBucketCorsActualRequestNoMatchVariesByOrigin(t *testing.T) {
+	cfg := &cors.Config{CORSRules: []cors.Rule{{
+		AllowedOrigins: []string{"https://allowed.example.com"},
+		AllowedMethods: []string{"GET"},
+	}}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/mybucket/obj", nil)
+	req.Header.Set("Origin", "https://denied.example.com")
+
+	if handled := applyBucketCors(rec, req, cfg); handled {
+		t.Fatal("actual request must continue when CORS does not match")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+	requireCorsOriginVary(t, rec.Header())
 }
 
 func TestPerBucketCorsPreflightNoMatch(t *testing.T) {
@@ -68,6 +106,84 @@ func TestPerBucketCorsPreflightNoMatch(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for disallowed origin, got %d", rec.Code)
 	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("rejected preflight returned allow-origin %q", got)
+	}
+	requireCorsVary(t, rec.Header())
+}
+
+func TestPerBucketCorsPreflightWildcardOriginAndZeroMaxAge(t *testing.T) {
+	doc := `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>0</MaxAgeSeconds></CORSRule></CORSConfiguration>`
+	cfg, err := cors.ParseBucketCorsConfig(strings.NewReader(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/mybucket/obj", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Headers", "RANGE")
+
+	if handled := applyBucketCors(rec, req, cfg); !handled {
+		t.Fatal("expected preflight to be handled")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("allow-credentials = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET, HEAD" {
+		t.Fatalf("allow-methods = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "RANGE" {
+		t.Fatalf("allow-headers = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "ETag" {
+		t.Fatalf("expose-headers = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Max-Age"); got != "0" {
+		t.Fatalf("max-age = %q", got)
+	}
+	requireCorsVary(t, rec.Header())
+}
+
+func TestPerBucketCorsPreflightUsesFirstFullyMatchingRule(t *testing.T) {
+	cfg := &cors.Config{CORSRules: []cors.Rule{
+		{
+			AllowedOrigins: []string{"https://app.example.com"},
+			AllowedMethods: []string{"GET"},
+			AllowedHeaders: []string{"x-a"},
+			ExposeHeaders:  []string{"x-rule-a"},
+			MaxAgeSeconds:  1,
+		},
+		{
+			AllowedOrigins: []string{"https://app.example.com"},
+			AllowedMethods: []string{"GET", "HEAD"},
+			AllowedHeaders: []string{"*"},
+			ExposeHeaders:  []string{"x-rule-b"},
+			MaxAgeSeconds:  2,
+		},
+	}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/mybucket/obj", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Headers", "X-B")
+
+	if handled := applyBucketCors(rec, req, cfg); !handled {
+		t.Fatal("expected preflight to be handled")
+	}
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "x-rule-b" {
+		t.Fatalf("selected rule expose-headers = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET, HEAD" {
+		t.Fatalf("selected rule allow-methods = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Max-Age"); got != "2" {
+		t.Fatalf("selected rule max-age = %q", got)
+	}
 }
 
 func TestPerBucketCorsActualRequest(t *testing.T) {
@@ -84,10 +200,180 @@ func TestPerBucketCorsActualRequest(t *testing.T) {
 	if handled {
 		t.Fatal("actual (non-preflight) request must not be terminated by CORS")
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://any.com" {
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("allow-origin = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("allow-credentials = %q", got)
 	}
 	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "ETag" {
 		t.Fatalf("expose-headers = %q", got)
+	}
+}
+
+func TestPerBucketCorsOriginPatternResponse(t *testing.T) {
+	cfg := &cors.Config{CORSRules: []cors.Rule{{
+		AllowedOrigins: []string{"https://app.example.com", "https://*", "*"},
+		AllowedMethods: []string{"GET"},
+	}}}
+
+	tests := []struct {
+		origin          string
+		wantOrigin      string
+		wantCredentials string
+	}{
+		{"https://app.example.com", "https://app.example.com", "true"},
+		{"https://other.example.com", "https://other.example.com", "true"},
+		{"http://other.example.com", "*", ""},
+	}
+
+	for _, tt := range tests {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/mybucket/obj", nil)
+		req.Header.Set("Origin", tt.origin)
+		if handled := applyBucketCors(rec, req, cfg); handled {
+			t.Fatal("actual request must not be terminated by CORS")
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != tt.wantOrigin {
+			t.Fatalf("origin %q: allow-origin = %q, want %q", tt.origin, got, tt.wantOrigin)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != tt.wantCredentials {
+			t.Fatalf("origin %q: allow-credentials = %q, want %q", tt.origin, got, tt.wantCredentials)
+		}
+	}
+}
+
+func TestBucketCorsMetadataErrorFailsClosed(t *testing.T) {
+	oldObjectAPI := newObjectLayerFn()
+	setObjectLayer(nil)
+	defer setObjectLayer(oldObjectAPI)
+
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for _, method := range []string{http.MethodGet, http.MethodOptions} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, getGetObjectURL("", "cors-metadata-error", "object"), nil)
+		req.Header.Set("Origin", "https://app.example.com")
+		if method == http.MethodOptions {
+			req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		}
+		wrapped.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("%s status = %d, want %d", method, rec.Code, http.StatusNoContent)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("%s metadata error fell back to global allow-origin %q", method, got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Fatalf("%s metadata error fell back to global credentials %q", method, got)
+		}
+	}
+}
+
+func TestBucketCorsNoConfigUsesGlobalFallback(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketCorsNoConfigUsesGlobalFallback,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testBucketCorsNoConfigUsesGlobalFallback(_ ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, getGetObjectURL("", bucket, "object"), nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("allow-credentials = %q", got)
+	}
+}
+
+func TestPerBucketCorsActualPatternOriginSupportsCredentials(t *testing.T) {
+	cfg := &cors.Config{CORSRules: []cors.Rule{{
+		AllowedOrigins: []string{"https://*.example.com"},
+		AllowedMethods: []string{"GET"},
+	}}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/mybucket/obj", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+
+	if handled := applyBucketCors(rec, req, cfg); handled {
+		t.Fatal("actual request must continue")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("allow-credentials = %q", got)
+	}
+}
+
+func TestPerBucketCorsActualNullOriginSurvivesForwardingMiddleware(t *testing.T) {
+	next := setBucketForwardingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	t.Run("per-bucket null origin", func(t *testing.T) {
+		cfg := &cors.Config{CORSRules: []cors.Rule{{
+			AllowedOrigins: []string{"null"},
+			AllowedMethods: []string{"GET"},
+		}}}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/mybucket/obj", nil)
+		req.Header.Set("Origin", "null")
+
+		if handled := applyBucketCors(rec, req, cfg); handled {
+			t.Fatal("actual request must continue")
+		}
+		next.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "null" {
+			t.Fatalf("allow-origin = %q", got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+			t.Fatalf("allow-credentials = %q", got)
+		}
+	})
+
+	t.Run("legacy unmarked null origin", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		rec.Header().Set("Access-Control-Allow-Origin", "null")
+		req := httptest.NewRequest(http.MethodGet, "/mybucket/obj", nil)
+
+		next.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Fatalf("allow-origin = %q", got)
+		}
+	})
+}
+
+func requireCorsVary(t *testing.T, header http.Header) {
+	t.Helper()
+	values := strings.Join(header.Values("Vary"), ",")
+	for _, want := range []string{"Origin", "Access-Control-Request-Method", "Access-Control-Request-Headers"} {
+		if !strings.Contains(values, want) {
+			t.Fatalf("Vary = %q, missing %q", values, want)
+		}
+	}
+}
+
+func requireCorsOriginVary(t *testing.T, header http.Header) {
+	t.Helper()
+	if values := strings.Join(header.Values("Vary"), ","); !strings.Contains(values, "Origin") {
+		t.Fatalf("Vary = %q, missing Origin", values)
 	}
 }
