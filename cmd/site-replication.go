@@ -3406,80 +3406,116 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 			quotaCfgs := make([]*madmin.BucketQuota, numSites)
 			sseCfgSet := set.NewStringSet()
 			versionCfgSet := set.NewStringSet()
-			var tagCount, olockCfgCount, sseCfgCount, corsCfgCount, versionCfgCount int
+			validReplCfg := make([]bool, numSites)
+			validVersionCfg := make([]bool, numSites)
+			validQuotaCfg := make([]bool, numSites)
+			validTags := make([]bool, numSites)
+			validPolicies := make([]bool, numSites)
+			validObjectLockCfg := make([]bool, numSites)
+			validSSECfg := make([]bool, numSites)
+			validCorsCfg := make([]bool, numSites)
+			var tagCount, olockCfgCount, policyCount, quotaCfgCount, sseCfgCount, corsCfgCount, versionCfgCount int
 			for i, s := range slc {
+				logInvalid := func(configType string, err error) {
+					replLogOnceIf(ctx,
+						fmt.Errorf("unable to parse %s metadata for bucket %s from site %s: %w", configType, b, s.DeploymentID, err),
+						"site-replication-status-"+configType+"-"+b+"-"+s.DeploymentID)
+				}
 				if s.ReplicationConfig != nil {
 					cfgBytes, err := base64.StdEncoding.DecodeString(*s.ReplicationConfig)
-					if err != nil {
-						continue
+					if err == nil {
+						cfg, err := sreplication.ParseConfig(bytes.NewReader(cfgBytes))
+						if err == nil {
+							replCfgs[i] = cfg
+							validReplCfg[i] = true
+						} else {
+							logInvalid("replication", err)
+						}
+					} else {
+						logInvalid("replication", err)
 					}
-					cfg, err := sreplication.ParseConfig(bytes.NewReader(cfgBytes))
-					if err != nil {
-						continue
-					}
-					replCfgs[i] = cfg
 				}
 				if s.Versioning != nil {
 					configData, err := base64.StdEncoding.DecodeString(*s.Versioning)
-					if err != nil {
-						continue
-					}
-					versionCfgCount++
-					if !versionCfgSet.Contains(string(configData)) {
-						versionCfgSet.Add(string(configData))
+					if err == nil {
+						validVersionCfg[i] = true
+						versionCfgCount++
+						if !versionCfgSet.Contains(string(configData)) {
+							versionCfgSet.Add(string(configData))
+						}
+					} else {
+						logInvalid("versioning", err)
 					}
 				}
 				if s.QuotaConfig != nil {
 					cfgBytes, err := base64.StdEncoding.DecodeString(*s.QuotaConfig)
-					if err != nil {
-						continue
+					if err == nil {
+						cfg, err := parseBucketQuota(b, cfgBytes)
+						if err == nil {
+							if cfg != nil && *cfg != (madmin.BucketQuota{}) {
+								quotaCfgs[i] = cfg
+								validQuotaCfg[i] = true
+								quotaCfgCount++
+							}
+						} else {
+							logInvalid("quota", err)
+						}
+					} else {
+						logInvalid("quota", err)
 					}
-					cfg, err := parseBucketQuota(b, cfgBytes)
-					if err != nil {
-						continue
-					}
-					quotaCfgs[i] = cfg
 				}
 				if s.Tags != nil {
 					tagBytes, err := base64.StdEncoding.DecodeString(*s.Tags)
-					if err != nil {
-						continue
-					}
-					tagCount++
-					if !tagSet.Contains(string(tagBytes)) {
-						tagSet.Add(string(tagBytes))
+					if err == nil {
+						validTags[i] = true
+						tagCount++
+						if !tagSet.Contains(string(tagBytes)) {
+							tagSet.Add(string(tagBytes))
+						}
+					} else {
+						logInvalid("tags", err)
 					}
 				}
 				if len(s.Policy) > 0 {
 					plcy, err := policy.ParseBucketPolicyConfig(bytes.NewReader(s.Policy), b)
-					if err != nil {
-						continue
+					if err == nil {
+						policies[i] = plcy
+						validPolicies[i] = true
+						policyCount++
+					} else {
+						logInvalid("policy", err)
 					}
-					policies[i] = plcy
 				}
 				if s.ObjectLockConfig != nil {
 					configData, err := base64.StdEncoding.DecodeString(*s.ObjectLockConfig)
-					if err != nil {
-						continue
-					}
-					olockCfgCount++
-					if !olockConfigSet.Contains(string(configData)) {
-						olockConfigSet.Add(string(configData))
+					if err == nil {
+						validObjectLockCfg[i] = true
+						olockCfgCount++
+						if !olockConfigSet.Contains(string(configData)) {
+							olockConfigSet.Add(string(configData))
+						}
+					} else {
+						logInvalid("object-lock", err)
 					}
 				}
 				if s.SSEConfig != nil {
 					configData, err := base64.StdEncoding.DecodeString(*s.SSEConfig)
-					if err != nil {
-						continue
-					}
-					sseCfgCount++
-					if !sseCfgSet.Contains(string(configData)) {
-						sseCfgSet.Add(string(configData))
+					if err == nil {
+						validSSECfg[i] = true
+						sseCfgCount++
+						if !sseCfgSet.Contains(string(configData)) {
+							sseCfgSet.Add(string(configData))
+						}
+					} else {
+						logInvalid("sse", err)
 					}
 				}
 				if s.CorsConfig != nil {
 					if _, err := decodeCORSReplicationPayload(s.CorsConfig); err == nil {
+						validCorsCfg[i] = true
 						corsCfgCount++
+					} else {
+						logInvalid("cors", err)
 					}
 				}
 				ss, ok := info.StatsSummary[s.DeploymentID]
@@ -3491,23 +3527,26 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 					ss.ReplicatedBuckets++
 				}
 				ss.TotalBucketsCount++
-				if tagCount > 0 {
+				if validTags[i] {
 					ss.TotalTagsCount++
 				}
-				if olockCfgCount > 0 {
+				if validObjectLockCfg[i] {
 					ss.TotalLockConfigCount++
 				}
-				if sseCfgCount > 0 {
+				if validSSECfg[i] {
 					ss.TotalSSEConfigCount++
 				}
-				if s.CorsConfig != nil {
+				if validCorsCfg[i] {
 					ss.TotalCorsConfigCount++
 				}
-				if versionCfgCount > 0 {
+				if validVersionCfg[i] {
 					ss.TotalVersioningConfigCount++
 				}
-				if len(policies) > 0 {
+				if validPolicies[i] {
 					ss.TotalBucketPoliciesCount++
+				}
+				if validQuotaCfg[i] {
+					ss.TotalQuotaConfigCount++
 				}
 				info.StatsSummary[s.DeploymentID] = ss
 			}
@@ -3542,13 +3581,13 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 					PolicyMismatch:           policyMismatch,
 					ReplicationCfgMismatch:   replCfgMismatch,
 					QuotaCfgMismatch:         quotaCfgMismatch,
-					HasReplicationCfg:        s.ReplicationConfig != nil,
-					HasTagsSet:               s.Tags != nil,
-					HasOLockConfigSet:        s.ObjectLockConfig != nil,
-					HasPolicySet:             s.Policy != nil,
+					HasReplicationCfg:        validReplCfg[i],
+					HasTagsSet:               validTags[i],
+					HasOLockConfigSet:        validObjectLockCfg[i],
+					HasPolicySet:             validPolicies[i],
 					HasQuotaCfgSet:           quotaCfgSet,
-					HasSSECfgSet:             s.SSEConfig != nil,
-					HasCorsCfgSet:            s.CorsConfig != nil,
+					HasSSECfgSet:             validSSECfg[i],
+					HasCorsCfgSet:            validCorsCfg[i],
 				}
 				var m srBucketMetaInfo
 				if len(bucketStats[s.Bucket]) > dIdx {
@@ -3574,11 +3613,14 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 				if !corsCfgMismatch && corsCfgCount == numSites {
 					sum.ReplicatedCorsConfig++
 				}
-				if !policyMismatch && len(policies) == numSites {
+				if !policyMismatch && policyCount == numSites {
 					sum.ReplicatedBucketPolicies++
 				}
 				if !tagMismatch && tagCount == numSites {
 					sum.ReplicatedTags++
+				}
+				if !quotaCfgMismatch && quotaCfgCount == numSites {
+					sum.ReplicatedQuotaConfig++
 				}
 				info.StatsSummary[s.DeploymentID] = sum
 			}
