@@ -574,6 +574,24 @@ func DecryptCopyRequestR(client io.Reader, h http.Header, bucket, object string,
 	return newDecryptReader(client, key, bucket, object, seqNumber, metadata)
 }
 
+// checkSSECReadKey authenticates a supplied SSE-C read key against the sealed
+// object key when a read has no data from which to build a decryptor.
+func checkSSECReadKey(h http.Header, oi ObjectInfo, opts ObjectOptions) error {
+	if opts.NoDecryption || opts.Transition.RestoreRequest != nil || !crypto.SSEC.IsEncrypted(oi.UserDefined) {
+		return nil
+	}
+	switch {
+	case crypto.SSECopy.IsRequested(h):
+		_, err := crypto.SSECopy.UnsealObjectKey(h, oi.UserDefined, oi.Bucket, oi.Name)
+		return err
+	case crypto.SSEC.IsRequested(h):
+		_, err := crypto.SSEC.UnsealObjectKey(h, oi.UserDefined, oi.Bucket, oi.Name)
+		return err
+	default:
+		return nil
+	}
+}
+
 func newDecryptReader(client io.Reader, key []byte, bucket, object string, seqNumber uint32, metadata map[string]string) (io.Reader, error) {
 	objectEncryptionKey, err := decryptObjectMeta(key, bucket, object, metadata)
 	if err != nil {
