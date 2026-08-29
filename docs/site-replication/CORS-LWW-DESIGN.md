@@ -6,7 +6,7 @@
 - Baseline: `e4e3007da6d7d1198a6a050e34f84566d40a9654`
 - Working branch: `codex/issue-75-cors-hardening`
 - Decision: CORS-specific deterministic last-writer-wins register, described below
-- Implementation state: B2 is commit `724f8703d` in PR #80; the B3 strict-wire integration is resolved locally and awaits final combined verification before submission
+- Implementation state: B2 is commit `724f8703d`; the final B2+B3 integration is signed commit `0eebc928f` on the PR #80 branch and has passed combined local acceptance
 - Release state: PR #80 remains open; nothing is merged, tagged, packaged, published as an image, or deployed
 - Final design/implementation review: the B2 implementation was GO; the combined B2+B3 Opus 5 Max review found one test-build conflict and one legacy-metadata load risk, both corrected before combined testing
 
@@ -509,11 +509,21 @@ The committed B2 implementation passed:
 - gofmt and `git diff --check`;
 - a signed admin dispatch -> apply -> status -> heal -> cache reload test.
 
-After integrating B3 and resolving overlap, focused strict-parser,
-validation, middleware, replication, namespace, and legacy-repair tests also
-pass. Full combined normal/race, client, compatibility, and release-gate runs
-are intentionally scheduled only after the code and documentation solution is
-fully frozen.
+After integrating B3 and resolving overlap, the frozen combination passed:
+
+- focused strict-parser, validation, middleware, replication, namespace,
+  legacy-repair, and race tests;
+- CI-tagged `go test ./...`, full vet/build, module verification, pinned lint,
+  and rebrand/compatibility checks;
+- a real local two-site deployment with two nodes per site, including
+  bidirectional replacement, a site missing DELETE while offline, restart
+  heal, and a second restart preserving the tombstone; and
+- raw SigV4 wire probes that reject a lowercase method and trailing XML root,
+  accept a 255-code-point Unicode ID, and replicate the accepted config.
+
+The public EN/ZH design records pass a warning-fatal Hugo build, rendered link
+checking, and local browser QA. These results are acceptance evidence, not a
+release, deployment, tag, or production claim.
 
 The repository `make lint` bootstrap could not download its private copy of
 golangci-lint because the network returned HTTP status 000. The same exact
