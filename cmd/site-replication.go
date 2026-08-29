@@ -46,6 +46,7 @@ import (
 	"github.com/minio/minio/internal/bucket/cors"
 	"github.com/minio/minio/internal/bucket/lifecycle"
 	sreplication "github.com/minio/minio/internal/bucket/replication"
+	"github.com/minio/minio/internal/bucket/versioning"
 	"github.com/minio/minio/internal/logger"
 	xldap "github.com/minio/pkg/v3/ldap"
 	"github.com/minio/pkg/v3/policy"
@@ -888,6 +889,32 @@ func (c *SiteReplicationSys) DeleteBucketHook(ctx context.Context, bucket string
 	return errors.Unwrap(cerr)
 }
 
+func enablePeerBucketVersioning(meta *BucketMetadata) error {
+	if len(meta.VersioningConfigXML) == 0 {
+		meta.VersioningConfigXML = enabledBucketVersioningConfig
+		if meta.VersioningConfigUpdatedAt.IsZero() {
+			meta.VersioningConfigUpdatedAt = meta.Created
+		}
+		return nil
+	}
+	config, err := versioning.ParseConfig(bytes.NewReader(meta.VersioningConfigXML))
+	if err != nil {
+		meta.VersioningConfigXML = enabledBucketVersioningConfig
+		meta.VersioningConfigUpdatedAt = UTCNow()
+		return nil
+	}
+	if config.Enabled() {
+		return nil
+	}
+	config.Status = versioning.Enabled
+	meta.VersioningConfigXML, err = xml.Marshal(config)
+	if err != nil {
+		return err
+	}
+	meta.VersioningConfigUpdatedAt = UTCNow()
+	return nil
+}
+
 // PeerBucketMakeWithVersioningHandler - creates bucket and enables versioning.
 func (c *SiteReplicationSys) PeerBucketMakeWithVersioningHandler(ctx context.Context, bucket string, opts MakeBucketOptions) error {
 	objAPI := newObjectLayerFn()
@@ -916,9 +943,14 @@ func (c *SiteReplicationSys) PeerBucketMakeWithVersioningHandler(ctx context.Con
 
 	meta.SetCreatedAt(opts.CreatedAt)
 
-	meta.VersioningConfigXML = enabledBucketVersioningConfig
-	if opts.LockEnabled {
+	if err := enablePeerBucketVersioning(&meta); err != nil {
+		return wrapSRErr(err)
+	}
+	if opts.LockEnabled && len(meta.ObjectLockConfigXML) == 0 {
 		meta.ObjectLockConfigXML = enabledBucketObjectLockConfig
+		if meta.ObjectLockConfigUpdatedAt.IsZero() {
+			meta.ObjectLockConfigUpdatedAt = meta.Created
+		}
 	}
 
 	if err := meta.Save(context.Background(), objAPI); err != nil {
