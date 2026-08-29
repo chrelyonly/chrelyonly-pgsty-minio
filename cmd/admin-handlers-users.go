@@ -355,17 +355,24 @@ func (a adminAPIHandlers) ListGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 // SetGroupStatus - PUT /minio/admin/v3/set-group-status?group=mygroup1&status=enabled
+func setGroupStatusAdminAction(status string) policy.AdminAction {
+	if madmin.GroupStatus(status) == madmin.GroupDisabled {
+		return policy.DisableGroupAdminAction
+	}
+	return policy.EnableGroupAdminAction
+}
+
 func (a adminAPIHandlers) SetGroupStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-
-	objectAPI, _ := validateAdminReq(ctx, w, r, policy.EnableGroupAdminAction)
-	if objectAPI == nil {
-		return
-	}
 
 	vars := mux.Vars(r)
 	group := vars["group"]
 	status := vars["status"]
+
+	objectAPI, _ := validateAdminReq(ctx, w, r, setGroupStatusAdminAction(status))
+	if objectAPI == nil {
+		return
+	}
 
 	var (
 		err       error
