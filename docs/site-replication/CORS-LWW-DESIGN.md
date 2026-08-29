@@ -6,9 +6,9 @@
 - Baseline: `e4e3007da6d7d1198a6a050e34f84566d40a9654`
 - Working branch: `codex/issue-75-cors-hardening`
 - Decision: CORS-specific deterministic last-writer-wins register, described below
-- Implementation state: implemented and locally verified; uncommitted and unpushed
-- Release state: not released; remote CI, merge, tag, package, and image gates remain separate
-- Final design/implementation review: Claude Code Opus 5 Max found no P0/P1 and judged the implementation GO; its mandatory documentation corrections are incorporated here
+- Implementation state: B2 is commit `724f8703d` in PR #80; the B3 strict-wire integration is resolved locally and awaits final combined verification before submission
+- Release state: PR #80 remains open; nothing is merged, tagged, packaged, published as an image, or deployed
+- Final design/implementation review: the B2 implementation was GO; the combined B2+B3 Opus 5 Max review found one test-build conflict and one legacy-metadata load risk, both corrected before combined testing
 
 This document defines the replication state, ordering, persistence, status,
 healing, concurrency, compatibility, and test contract for per-bucket CORS.
@@ -51,16 +51,21 @@ The following are deliberately out of scope:
 
 ### Adjacent issue-75 changes in the same candidate
 
-The current dirty issue-75 candidate also contains CORS work outside the LWW
-register itself:
+The final issue-75 candidate also contains CORS work outside the LWW register
+itself:
 
-- stricter `cors.Config.Validate()` rules for empty origins and unsupported
-  wildcard forms;
-- matcher signature and response-selection changes needed to distinguish a
-  literal `*` origin from a patterned match;
+- a strict, namespace-tolerant XML wire parser that rejects trailing roots,
+  unknown/nested elements, duplicate singleton fields, invalid integer shape,
+  and non-whitespace character data;
+- Unicode code-point ID counting, exact uppercase S3 methods, non-empty header
+  elements, and int32-compatible MaxAge validation;
+- a single-`*` matcher and response-selection changes needed to distinguish a
+  literal `*` origin from a patterned or explicit `null` match;
 - fail-closed metadata-error handling in the HTTP middleware;
-- preflight expose headers and complete `Vary` behavior; and
-- HTTP protocol negative tests.
+- complete allowed-method, explicit MaxAge=0, expose-header, credentials, and
+  `Vary` preflight behavior;
+- checksum mismatch classification as `BadDigest`; and
+- parser, signed-handler, browser-response, and protocol adversarial tests.
 
 Those changes share the same CORS release gate and are present in the reviewed
 diff, but they are not part of the replication conflict key or join algorithm.
@@ -152,6 +157,13 @@ base64 string equality remaining safe for the shared metadata helper.
 
 An invalid wire value is not a candidate winner and is never propagated.
 Peer apply rejects it before any metadata write.
+
+A bucket may nevertheless contain a CORS document written by a pre-release,
+more lenient build. Loading such metadata keeps policy, lifecycle, versioning,
+and the other bucket fields available, but stashes the CORS parse/validation
+error and exposes no active CORS config. CORS GET and middleware lookup return
+that error, so browser handling fails closed. A valid PUT or DELETE can repair
+the record; any attempt to save a newly invalid CORS document remains rejected.
 
 ## Deterministic Ordering
 
@@ -381,6 +393,9 @@ After cache removal or process restart:
 - a live state restores the same parsed rules and source timestamp;
 - a tombstone restores nil payload plus its non-zero timestamp;
 - a baseline remains nil plus zero timestamp.
+- a legacy-invalid raw document leaves the non-CORS bucket metadata readable,
+  disables per-bucket CORS fail-closed, and remains repairable through a valid
+  CORS PUT or DELETE.
 
 ## Error Handling
 
@@ -391,6 +406,7 @@ After cache removal or process restart:
 | empty non-nil payload | reject |
 | malformed XML | reject before saving |
 | semantically invalid CORS rules | reject before saving |
+| legacy-invalid CORS already on disk | load other metadata, return a CORS-specific error, and permit CORS replacement or deletion |
 | event before bucket `CreatedAt` | ignore and log once per bucket |
 | missing bucket metadata | return an error; do not create metadata implicitly |
 | exact duplicate or lower state | successful no-op |
@@ -453,6 +469,8 @@ The implementation is acceptable only while all of these invariants hold:
 10. Same-payload/newer-timestamp heal advances the older barrier.
 11. Initial sync and retry preserve tombstones and source timestamps.
 12. Disk reload and cache reload preserve state kind, payload, and timestamp.
+13. A legacy-invalid CORS document cannot activate global fallback, hide other
+    bucket metadata, or prevent a valid CORS PUT/DELETE repair.
 
 ## Test Contract
 
@@ -462,6 +480,7 @@ The required test matrix is:
 | --- | --- |
 | Wire | canonical base64 accepted; case-different decoded bytes differ; malformed and non-canonical base64 rejected |
 | Validation | invalid XML and semantically invalid origin/method/rule rejected without mutation |
+| Strict wire | standard S3 namespace accepted; trailing root, unknown/nested elements, duplicate singleton fields, lowercase methods, byte-counted Unicode IDs, and invalid MaxAge rejected |
 | Ordering | older event ignored; newer event applied; duplicate no-op; equal live/live order-independent; equal PUT/DELETE chooses tombstone |
 | Barrier | same payload with newer timestamp is persisted and healed |
 | Tombstone | delayed PUT cannot resurrect; missed DELETE wins heal; repeated DELETE is idempotent |
@@ -472,11 +491,12 @@ The required test matrix is:
 | Initial sync | baseline omitted; live and tombstone emitted with exact source timestamp |
 | Lineage | pre-creation event ignored; post-creation event applied |
 | Restart | cache removal/disk reload preserves tombstone or live state and status timestamp |
+| Legacy repair | a lenient historical document loads fail-closed without hiding other metadata and can be deleted or replaced |
 | Full seam | signed admin dispatch -> peer apply -> real status collection -> local heal -> cache reload -> remote heal dispatch |
 
 ## Local Verification Record
 
-The current uncommitted implementation has passed:
+The committed B2 implementation passed:
 
 - the supplied adversarial base64 and same-payload/newer-timestamp tests;
 - focused CORS normal tests;
@@ -489,6 +509,12 @@ The current uncommitted implementation has passed:
 - gofmt and `git diff --check`;
 - a signed admin dispatch -> apply -> status -> heal -> cache reload test.
 
+After integrating B3 and resolving overlap, focused strict-parser,
+validation, middleware, replication, namespace, and legacy-repair tests also
+pass. Full combined normal/race, client, compatibility, and release-gate runs
+are intentionally scheduled only after the code and documentation solution is
+fully frozen.
+
 The repository `make lint` bootstrap could not download its private copy of
 golangci-lint because the network returned HTTP status 000. The same exact
 v2.13.1 binary already installed locally was used with the Makefile's build
@@ -496,7 +522,7 @@ tags, timeout, and configuration and reported zero issues.
 
 ## Independent Review Record
 
-Three read-only local Claude Code reviews used canonical model
+Four read-only local Claude Code reviews used canonical model
 `claude-opus-5` at `max` effort.
 
 The first review rejected the pre-fix candidate and identified the unsafe
@@ -519,6 +545,15 @@ an optional status hardening so semantically invalid canonical payloads are
 not selected and retransmitted. The hardening and all mandatory documentation
 corrections are incorporated in the current tree. The final selected solution
 is therefore the C-prime register and invariants recorded in this document.
+
+The fourth review examined the resolved B2+B3 combination. It confirmed that
+the C-prime register, strict wire parser, MaxAge presence, wildcard credentials,
+Origin-null marker, rejected-preflight `Vary`, checksum classification, and
+peer validation can coexist. It found a conflict-resolution test helper typo
+and the risk that strict parsing could make all bucket metadata unavailable for
+a document accepted by a lenient development build. The helper was corrected;
+metadata loading now stashes a CORS-specific error, fails browser behavior
+closed, rejects new invalid saves, and allows a valid CORS PUT/DELETE repair.
 
 ## Release Gates
 

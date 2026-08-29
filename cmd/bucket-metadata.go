@@ -113,6 +113,7 @@ type BucketMetadata struct {
 	bucketTargetConfig     *madmin.BucketTargets
 	bucketTargetConfigMeta map[string]string
 	corsConfig             *cors.Config
+	corsConfigErr          error
 }
 
 // newBucketMetadata creates BucketMetadata with the supplied name and Created to Now.
@@ -261,6 +262,12 @@ func loadBucketMetadataParse(ctx context.Context, objectAPI ObjectLayer, bucket 
 			return b, err
 		}
 	}
+	if b.corsConfigErr != nil {
+		// Keep the rest of the bucket metadata available so an operator can
+		// replace or delete a CORS document accepted by an older, more lenient
+		// build. Defer unrelated metadata migration until CORS is repaired.
+		return b, nil
+	}
 
 	// migrate unencrypted remote targets
 	if err = b.migrateTargetConfig(ctx, objectAPI); err != nil {
@@ -320,10 +327,17 @@ func (b *BucketMetadata) parseAllConfigs(ctx context.Context, objectAPI ObjectLa
 		b.taggingConfig = nil
 	}
 
+	b.corsConfigErr = nil
 	if len(b.CorsConfigXML) != 0 {
-		b.corsConfig, err = cors.ParseBucketCorsConfig(bytes.NewReader(b.CorsConfigXML))
-		if err != nil {
-			return err
+		cfg, corsErr := cors.ParseBucketCorsConfig(bytes.NewReader(b.CorsConfigXML))
+		if corsErr == nil {
+			corsErr = cfg.Validate()
+		}
+		if corsErr != nil {
+			b.corsConfig = nil
+			b.corsConfigErr = fmt.Errorf("invalid bucket CORS configuration: %w", corsErr)
+		} else {
+			b.corsConfig = cfg
 		}
 	} else {
 		b.corsConfig = nil
@@ -521,6 +535,9 @@ func (b *BucketMetadata) defaultTimestamps() {
 func (b *BucketMetadata) Save(ctx context.Context, api ObjectLayer) error {
 	if err := b.parseAllConfigs(ctx, api); err != nil {
 		return err
+	}
+	if b.corsConfigErr != nil {
+		return b.corsConfigErr
 	}
 
 	data := make([]byte, 4, b.Msgsize()+4)

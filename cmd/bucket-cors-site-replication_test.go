@@ -20,6 +20,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -748,6 +749,65 @@ func TestPeerBucketCorsCreatedAtFloor(t *testing.T) {
 		objAPITest: testPeerBucketCorsCreatedAtFloor,
 		endpoints:  []string{"GetBucketCors"},
 	})
+}
+
+func TestLegacyInvalidCorsMetadataCanBeDeleted(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testLegacyInvalidCorsMetadataCanBeDeleted,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testLegacyInvalidCorsMetadataCanBeDeleted(obj ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	ctx := t.Context()
+	meta, err := readBucketMetadata(ctx, obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyAt := meta.Created.Add(time.Second)
+	meta.CorsConfigXML = []byte(`<CORSConfiguration><CORSRule><AllowedOrigin>https://app.example.com</AllowedOrigin><AllowedMethod>get</AllowedMethod></CORSRule></CORSConfiguration>`)
+	meta.CorsConfigUpdatedAt = legacyAt
+
+	data := make([]byte, 4, meta.Msgsize()+4)
+	binary.LittleEndian.PutUint16(data[0:2], bucketMetadataFormat)
+	binary.LittleEndian.PutUint16(data[2:4], bucketMetadataVersion)
+	data, err = meta.MarshalMsg(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = saveConfig(ctx, obj, pathJoin(bucketMetaPrefix, bucket, bucketMetadataFile), data); err != nil {
+		t.Fatal(err)
+	}
+
+	globalBucketMetadataSys.Remove(bucket)
+	loaded, err := globalBucketMetadataSys.GetConfigFromDisk(ctx, bucket)
+	if err != nil {
+		t.Fatalf("strict load made all bucket metadata unavailable: %v", err)
+	}
+	if loaded.corsConfigErr == nil || loaded.corsConfig != nil {
+		t.Fatalf("legacy CORS state = (%#v, %v), want fail-closed parse error", loaded.corsConfig, loaded.corsConfigErr)
+	}
+	globalBucketMetadataSys.Set(bucket, loaded)
+	if _, gotAt, err := globalBucketMetadataSys.GetCorsConfig(bucket); err == nil || !gotAt.Equal(legacyAt) {
+		t.Fatalf("GetCorsConfig = timestamp %v, error %v; want legacy timestamp and error", gotAt, err)
+	}
+	if _, gotAt, err := globalBucketMetadataSys.GetCorsConfigXML(bucket); err == nil || !gotAt.Equal(legacyAt) {
+		t.Fatalf("GetCorsConfigXML = timestamp %v, error %v; want legacy timestamp and error", gotAt, err)
+	}
+
+	deleteAt, err := updateLocalBucketCORSMetadata(ctx, obj, bucket, nil)
+	if err != nil {
+		t.Fatalf("DELETE could not repair legacy invalid CORS: %v", err)
+	}
+	globalBucketMetadataSys.Remove(bucket)
+	repaired, err := globalBucketMetadataSys.GetConfigFromDisk(ctx, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.corsConfigErr != nil || repaired.corsConfig != nil || len(repaired.CorsConfigXML) != 0 || !repaired.CorsConfigUpdatedAt.Equal(deleteAt) {
+		t.Fatalf("repaired CORS state = (%q, %#v, %v, %v), want tombstone at %v", repaired.CorsConfigXML, repaired.corsConfig, repaired.corsConfigErr, repaired.CorsConfigUpdatedAt, deleteAt)
+	}
 }
 
 func testPeerBucketCorsCreatedAtFloor(_ ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {

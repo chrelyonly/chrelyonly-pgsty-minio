@@ -18,6 +18,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -31,6 +32,8 @@ import (
 	"github.com/minio/pkg/v3/wildcard"
 	"github.com/rs/cors"
 )
+
+type bucketCorsAppliedKey struct{}
 
 func newHTTPServerFn() *xhttp.Server {
 	globalObjLayerMutex.RLock()
@@ -652,7 +655,8 @@ func registerAPIRouter(router *mux.Router) {
 // (request is complete). For an actual request it adds the applicable
 // Access-Control-* response headers and returns false so the request
 // continues down the handler chain. If no rule matches a preflight it writes
-// 403 and returns true.
+// 403 and returns true. A matched actual request is marked in its context so
+// inner legacy middleware does not rewrite an explicitly allowed null origin.
 func applyBucketCors(w http.ResponseWriter, r *http.Request, cfg *bktcors.Config) (handled bool) {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -671,21 +675,21 @@ func applyBucketCors(w http.ResponseWriter, r *http.Request, cfg *bktcors.Config
 		// determine the outcome, including when the request is rejected.
 		h.Add("Vary", "Access-Control-Request-Method")
 		h.Add("Vary", "Access-Control-Request-Headers")
-		rule, allowedOrigin, allowedHeaders, ok := cfg.MatchPreflight(origin, method, reqHeaders)
+		rule, allowedOrigin, allowedHeaders, maxAgeSeconds, ok := cfg.MatchPreflight(origin, method, reqHeaders)
 		if !ok {
 			writeResponse(w, http.StatusForbidden, nil, mimeNone)
 			return true
 		}
 		setBucketCorsOriginHeaders(h, allowedOrigin, origin)
-		h.Set("Access-Control-Allow-Methods", method)
+		h.Set("Access-Control-Allow-Methods", strings.Join(rule.AllowedMethods, ", "))
 		if len(allowedHeaders) > 0 {
 			h.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
 		}
 		if len(rule.ExposeHeaders) > 0 {
 			h.Set("Access-Control-Expose-Headers", strings.Join(rule.ExposeHeaders, ", "))
 		}
-		if rule.MaxAgeSeconds > 0 {
-			h.Set("Access-Control-Max-Age", strconv.Itoa(rule.MaxAgeSeconds))
+		if maxAgeSeconds != nil {
+			h.Set("Access-Control-Max-Age", strconv.Itoa(*maxAgeSeconds))
 		}
 		writeResponse(w, http.StatusOK, nil, mimeNone)
 		return true
@@ -696,11 +700,17 @@ func applyBucketCors(w http.ResponseWriter, r *http.Request, cfg *bktcors.Config
 	if !ok {
 		return false // no matching rule → no CORS headers, continue normally
 	}
+	*r = *r.WithContext(context.WithValue(r.Context(), bucketCorsAppliedKey{}, struct{}{}))
 	setBucketCorsOriginHeaders(h, allowedOrigin, origin)
 	if len(rule.ExposeHeaders) > 0 {
 		h.Set("Access-Control-Expose-Headers", strings.Join(rule.ExposeHeaders, ", "))
 	}
 	return false
+}
+
+func bucketCorsWasApplied(r *http.Request) bool {
+	_, ok := r.Context().Value(bucketCorsAppliedKey{}).(struct{})
+	return ok
 }
 
 func setBucketCorsOriginHeaders(h http.Header, allowedOrigin, requestOrigin string) {

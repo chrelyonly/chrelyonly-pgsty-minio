@@ -62,6 +62,8 @@ func TestValidateRejections(t *testing.T) {
 		"multi wildcard header": `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedHeader>x-*-*</AllowedHeader></CORSRule></CORSConfiguration>`,
 		"question mark origin":  `<CORSConfiguration><CORSRule><AllowedOrigin>https://?.example.com</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
 		"question mark header":  `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedHeader>x-amz-?</AllowedHeader></CORSRule></CORSConfiguration>`,
+		"empty allowed header":  `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedHeader/></CORSRule></CORSConfiguration>`,
+		"empty expose header":   `<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><ExposeHeader/></CORSRule></CORSConfiguration>`,
 		"overlong id":           `<CORSConfiguration><CORSRule><ID>` + strings.Repeat("a", 256) + `</ID><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`,
 	}
 	for name, doc := range cases {
@@ -121,7 +123,7 @@ func TestMatchPreflightFallsThroughToLaterRule(t *testing.T) {
 		t.Fatalf("parse failed: %v", err)
 	}
 
-	rule, _, allowed, ok := c.MatchPreflight("https://app.example.com", "GET", []string{"x-custom-header"})
+	rule, _, allowed, _, ok := c.MatchPreflight("https://app.example.com", "GET", []string{"x-custom-header"})
 	if !ok {
 		t.Fatal("expected MatchPreflight to succeed via the later, permissive rule")
 	}
@@ -153,5 +155,16 @@ func TestMatchAllowedOriginReturnsFirstMatchingPattern(t *testing.T) {
 		if got != tt.want {
 			t.Fatalf("origin %q matched %q, want %q", tt.origin, got, tt.want)
 		}
+	}
+}
+
+func TestFilterAllowedHeadersPreservesRequestedNames(t *testing.T) {
+	rule := Rule{AllowedHeaders: []string{"x-amz-*"}}
+	allowed, ok := rule.FilterAllowedHeaders([]string{"X-Amz-Date", " X-AMZ-Meta-Test "})
+	if !ok {
+		t.Fatal("expected both request headers to match")
+	}
+	if got := strings.Join(allowed, ","); got != "X-Amz-Date,X-AMZ-Meta-Test" {
+		t.Fatalf("allowed headers = %q", got)
 	}
 }

@@ -27,6 +27,7 @@ import (
 	humanize "github.com/dustin/go-humanize"
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio/internal/bucket/cors"
+	hashpkg "github.com/minio/minio/internal/hash"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/mux"
 	"github.com/minio/pkg/v3/policy"
@@ -69,9 +70,9 @@ func (api objectAPIHandlers) PutBucketCorsHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	// PutBucketCors requires a Content-Md5 (or a supported trailing/full
-	// checksum). validateLengthAndChecksum wraps r.Body so the supplied
-	// digest is verified as the body is read below.
+	// PutBucketCors requires a Content-Md5 or a supported full-header
+	// checksum. validateLengthAndChecksum wraps r.Body so the supplied digest
+	// is verified as the body is read below.
 	if !validateLengthAndChecksum(r) {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMissingContentMD5), r.URL)
 		return
@@ -79,6 +80,10 @@ func (api objectAPIHandlers) PutBucketCorsHandler(w http.ResponseWriter, r *http
 
 	corsBytes, err := io.ReadAll(r.Body)
 	if err != nil {
+		if errors.Is(err, hashpkg.ErrInvalidChecksum) {
+			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrBadDigest), r.URL)
+			return
+		}
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
 	}

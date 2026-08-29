@@ -370,6 +370,9 @@ func (sys *BucketMetadataSys) GetCorsConfig(bucket string) (*cors.Config, time.T
 	if err != nil {
 		return nil, time.Time{}, err
 	}
+	if meta.corsConfigErr != nil {
+		return nil, meta.CorsConfigUpdatedAt, meta.corsConfigErr
+	}
 	if meta.corsConfig == nil {
 		return nil, time.Time{}, errConfigNotFound
 	}
@@ -383,6 +386,9 @@ func (sys *BucketMetadataSys) GetCorsConfigXML(bucket string) ([]byte, time.Time
 	meta, _, err := sys.GetConfig(GlobalContext, bucket)
 	if err != nil {
 		return nil, time.Time{}, err
+	}
+	if meta.corsConfigErr != nil {
+		return nil, meta.CorsConfigUpdatedAt, meta.corsConfigErr
 	}
 	if len(meta.CorsConfigXML) == 0 {
 		return nil, time.Time{}, errConfigNotFound
