@@ -619,6 +619,12 @@ func (api objectAPIHandlers) getObjectAttributesHandler(ctx context.Context, obj
 	if checkPreconditions(ctx, w, r, objInfo, opts) {
 		return
 	}
+	if crypto.SSEC.IsEncrypted(objInfo.UserDefined) {
+		if _, err = crypto.SSEC.UnsealObjectKey(r.Header, objInfo.UserDefined, bucket, object); err != nil {
+			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+	}
 
 	OA := new(getObjectAttributesResponse)
 
