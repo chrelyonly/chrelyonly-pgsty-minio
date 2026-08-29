@@ -18,14 +18,26 @@
 package cmd
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/minio/minio/internal/auth"
 	"github.com/minio/minio/internal/bucket/cors"
 )
+
+type corsLookupCountingObjectLayer struct {
+	ObjectLayer
+	getObjectNInfoCalls atomic.Int64
+}
+
+func (o *corsLookupCountingObjectLayer) GetObjectNInfo(ctx context.Context, bucket, object string, rs *HTTPRangeSpec, h http.Header, opts ObjectOptions) (*GetObjectReader, error) {
+	o.getObjectNInfoCalls.Add(1)
+	return o.ObjectLayer.GetObjectNInfo(ctx, bucket, object, rs, h, opts)
+}
 
 func TestPerBucketCorsPreflight(t *testing.T) {
 	cfg := &cors.Config{CORSRules: []cors.Rule{{
@@ -245,8 +257,13 @@ func TestPerBucketCorsOriginPatternResponse(t *testing.T) {
 
 func TestBucketCorsMetadataErrorFailsClosed(t *testing.T) {
 	oldObjectAPI := newObjectLayerFn()
+	oldMetadataSys := globalBucketMetadataSys
 	setObjectLayer(nil)
-	defer setObjectLayer(oldObjectAPI)
+	globalBucketMetadataSys = NewBucketMetadataSys()
+	defer func() {
+		setObjectLayer(oldObjectAPI)
+		globalBucketMetadataSys = oldMetadataSys
+	}()
 
 	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -273,12 +290,89 @@ func TestBucketCorsMetadataErrorFailsClosed(t *testing.T) {
 	}
 }
 
+func TestBucketCorsSkipsMetadataLookupWithoutOrigin(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketCorsSkipsMetadataLookupWithoutOrigin,
+		endpoints:  []string{"GetObject"},
+	})
+}
+
+func testBucketCorsSkipsMetadataLookupWithoutOrigin(obj ObjectLayer, _ string, _ string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	oldObjectAPI := newObjectLayerFn()
+	counting := &corsLookupCountingObjectLayer{ObjectLayer: obj}
+	setObjectLayer(counting)
+	defer setObjectLayer(oldObjectAPI)
+
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, getGetObjectURL("", "api", "v1/login"), nil))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	requireCorsOriginVary(t, rec.Header())
+	if got := counting.getObjectNInfoCalls.Load(); got != 0 {
+		t.Fatalf("request without Origin performed %d bucket metadata reads", got)
+	}
+}
+
+func TestBucketCorsOriginlessPreflightShapeUsesGlobalHandler(t *testing.T) {
+	nextCalled := false
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, getGetObjectURL("", "api", "v1/login"), nil)
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if nextCalled {
+		t.Fatal("originless preflight-shaped OPTIONS reached the application handler")
+	}
+	requireCorsOriginVary(t, rec.Header())
+}
+
 func TestBucketCorsNoConfigUsesGlobalFallback(t *testing.T) {
 	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
 		t:          t,
 		objAPITest: testBucketCorsNoConfigUsesGlobalFallback,
 		endpoints:  []string{"GetBucketCors"},
 	})
+}
+
+func TestBucketCorsMissingBucketUsesGlobalFallback(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketCorsMissingBucketUsesGlobalFallback,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testBucketCorsMissingBucketUsesGlobalFallback(_ ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, getGetObjectURL("", bucket+"-missing", "object"), nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("allow-credentials = %q", got)
+	}
 }
 
 func testBucketCorsNoConfigUsesGlobalFallback(_ ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {

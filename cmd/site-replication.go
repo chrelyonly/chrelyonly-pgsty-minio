@@ -46,6 +46,7 @@ import (
 	"github.com/minio/minio/internal/bucket/cors"
 	"github.com/minio/minio/internal/bucket/lifecycle"
 	sreplication "github.com/minio/minio/internal/bucket/replication"
+	"github.com/minio/minio/internal/bucket/versioning"
 	"github.com/minio/minio/internal/logger"
 	xldap "github.com/minio/pkg/v3/ldap"
 	"github.com/minio/pkg/v3/policy"
@@ -888,6 +889,32 @@ func (c *SiteReplicationSys) DeleteBucketHook(ctx context.Context, bucket string
 	return errors.Unwrap(cerr)
 }
 
+func enablePeerBucketVersioning(meta *BucketMetadata) error {
+	if len(meta.VersioningConfigXML) == 0 {
+		meta.VersioningConfigXML = enabledBucketVersioningConfig
+		if meta.VersioningConfigUpdatedAt.IsZero() {
+			meta.VersioningConfigUpdatedAt = meta.Created
+		}
+		return nil
+	}
+	config, err := versioning.ParseConfig(bytes.NewReader(meta.VersioningConfigXML))
+	if err != nil {
+		meta.VersioningConfigXML = enabledBucketVersioningConfig
+		meta.VersioningConfigUpdatedAt = UTCNow()
+		return nil
+	}
+	if config.Enabled() {
+		return nil
+	}
+	config.Status = versioning.Enabled
+	meta.VersioningConfigXML, err = xml.Marshal(config)
+	if err != nil {
+		return err
+	}
+	meta.VersioningConfigUpdatedAt = UTCNow()
+	return nil
+}
+
 // PeerBucketMakeWithVersioningHandler - creates bucket and enables versioning.
 func (c *SiteReplicationSys) PeerBucketMakeWithVersioningHandler(ctx context.Context, bucket string, opts MakeBucketOptions) error {
 	objAPI := newObjectLayerFn()
@@ -916,9 +943,14 @@ func (c *SiteReplicationSys) PeerBucketMakeWithVersioningHandler(ctx context.Con
 
 	meta.SetCreatedAt(opts.CreatedAt)
 
-	meta.VersioningConfigXML = enabledBucketVersioningConfig
-	if opts.LockEnabled {
+	if err := enablePeerBucketVersioning(&meta); err != nil {
+		return wrapSRErr(err)
+	}
+	if opts.LockEnabled && len(meta.ObjectLockConfigXML) == 0 {
 		meta.ObjectLockConfigXML = enabledBucketObjectLockConfig
+		if meta.ObjectLockConfigUpdatedAt.IsZero() {
+			meta.ObjectLockConfigUpdatedAt = meta.Created
+		}
 	}
 
 	if err := meta.Save(context.Background(), objAPI); err != nil {
@@ -1727,6 +1759,26 @@ func (c *SiteReplicationSys) PeerBucketTaggingHandler(ctx context.Context, bucke
 	return nil
 }
 
+func newSRBucketObjectLockMeta(bucket string, config *string, updatedAt time.Time) madmin.SRBucketMeta {
+	return madmin.SRBucketMeta{
+		Type:             madmin.SRBucketMetaTypeObjectLockConfig,
+		Bucket:           bucket,
+		ObjectLockConfig: config,
+		UpdatedAt:        updatedAt,
+	}
+}
+
+func srObjectLockPayload(item madmin.SRBucketMeta) *string {
+	if item.ObjectLockConfig != nil {
+		return item.ObjectLockConfig
+	}
+	return item.Tags
+}
+
+func (c *SiteReplicationSys) peerBucketObjectLockConfigItem(ctx context.Context, item madmin.SRBucketMeta) error {
+	return c.PeerBucketObjectLockConfigHandler(ctx, item.Bucket, srObjectLockPayload(item), item.UpdatedAt)
+}
+
 // PeerBucketObjectLockConfigHandler - sets object lock on local bucket.
 func (c *SiteReplicationSys) PeerBucketObjectLockConfigHandler(ctx context.Context, bucket string, objectLockData *string, updatedAt time.Time) error {
 	if objectLockData != nil {
@@ -2176,12 +2228,7 @@ func (c *SiteReplicationSys) syncToAllPeers(ctx context.Context, addOpts madmin.
 		objLockCfgData, tm := meta.ObjectLockConfigXML, meta.ObjectLockConfigUpdatedAt
 		if len(objLockCfgData) > 0 {
 			objLockStr := base64.StdEncoding.EncodeToString(objLockCfgData)
-			err = c.BucketMetaHook(ctx, madmin.SRBucketMeta{
-				Type:      madmin.SRBucketMetaTypeObjectLockConfig,
-				Bucket:    bucket,
-				Tags:      &objLockStr,
-				UpdatedAt: tm,
-			})
+			err = c.BucketMetaHook(ctx, newSRBucketObjectLockMeta(bucket, &objLockStr, tm))
 			if err != nil {
 				return errSRBucketMetaError(err)
 			}
@@ -3406,80 +3453,116 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 			quotaCfgs := make([]*madmin.BucketQuota, numSites)
 			sseCfgSet := set.NewStringSet()
 			versionCfgSet := set.NewStringSet()
-			var tagCount, olockCfgCount, sseCfgCount, corsCfgCount, versionCfgCount int
+			validReplCfg := make([]bool, numSites)
+			validVersionCfg := make([]bool, numSites)
+			validQuotaCfg := make([]bool, numSites)
+			validTags := make([]bool, numSites)
+			validPolicies := make([]bool, numSites)
+			validObjectLockCfg := make([]bool, numSites)
+			validSSECfg := make([]bool, numSites)
+			validCorsCfg := make([]bool, numSites)
+			var tagCount, olockCfgCount, policyCount, quotaCfgCount, sseCfgCount, corsCfgCount, versionCfgCount int
 			for i, s := range slc {
+				logInvalid := func(configType string, err error) {
+					replLogOnceIf(ctx,
+						fmt.Errorf("unable to parse %s metadata for bucket %s from site %s: %w", configType, b, s.DeploymentID, err),
+						"site-replication-status-"+configType+"-"+b+"-"+s.DeploymentID)
+				}
 				if s.ReplicationConfig != nil {
 					cfgBytes, err := base64.StdEncoding.DecodeString(*s.ReplicationConfig)
-					if err != nil {
-						continue
+					if err == nil {
+						cfg, err := sreplication.ParseConfig(bytes.NewReader(cfgBytes))
+						if err == nil {
+							replCfgs[i] = cfg
+							validReplCfg[i] = true
+						} else {
+							logInvalid("replication", err)
+						}
+					} else {
+						logInvalid("replication", err)
 					}
-					cfg, err := sreplication.ParseConfig(bytes.NewReader(cfgBytes))
-					if err != nil {
-						continue
-					}
-					replCfgs[i] = cfg
 				}
 				if s.Versioning != nil {
 					configData, err := base64.StdEncoding.DecodeString(*s.Versioning)
-					if err != nil {
-						continue
-					}
-					versionCfgCount++
-					if !versionCfgSet.Contains(string(configData)) {
-						versionCfgSet.Add(string(configData))
+					if err == nil {
+						validVersionCfg[i] = true
+						versionCfgCount++
+						if !versionCfgSet.Contains(string(configData)) {
+							versionCfgSet.Add(string(configData))
+						}
+					} else {
+						logInvalid("versioning", err)
 					}
 				}
 				if s.QuotaConfig != nil {
 					cfgBytes, err := base64.StdEncoding.DecodeString(*s.QuotaConfig)
-					if err != nil {
-						continue
+					if err == nil {
+						cfg, err := parseBucketQuota(b, cfgBytes)
+						if err == nil {
+							if cfg != nil && *cfg != (madmin.BucketQuota{}) {
+								quotaCfgs[i] = cfg
+								validQuotaCfg[i] = true
+								quotaCfgCount++
+							}
+						} else {
+							logInvalid("quota", err)
+						}
+					} else {
+						logInvalid("quota", err)
 					}
-					cfg, err := parseBucketQuota(b, cfgBytes)
-					if err != nil {
-						continue
-					}
-					quotaCfgs[i] = cfg
 				}
 				if s.Tags != nil {
 					tagBytes, err := base64.StdEncoding.DecodeString(*s.Tags)
-					if err != nil {
-						continue
-					}
-					tagCount++
-					if !tagSet.Contains(string(tagBytes)) {
-						tagSet.Add(string(tagBytes))
+					if err == nil {
+						validTags[i] = true
+						tagCount++
+						if !tagSet.Contains(string(tagBytes)) {
+							tagSet.Add(string(tagBytes))
+						}
+					} else {
+						logInvalid("tags", err)
 					}
 				}
 				if len(s.Policy) > 0 {
 					plcy, err := policy.ParseBucketPolicyConfig(bytes.NewReader(s.Policy), b)
-					if err != nil {
-						continue
+					if err == nil {
+						policies[i] = plcy
+						validPolicies[i] = true
+						policyCount++
+					} else {
+						logInvalid("policy", err)
 					}
-					policies[i] = plcy
 				}
 				if s.ObjectLockConfig != nil {
 					configData, err := base64.StdEncoding.DecodeString(*s.ObjectLockConfig)
-					if err != nil {
-						continue
-					}
-					olockCfgCount++
-					if !olockConfigSet.Contains(string(configData)) {
-						olockConfigSet.Add(string(configData))
+					if err == nil {
+						validObjectLockCfg[i] = true
+						olockCfgCount++
+						if !olockConfigSet.Contains(string(configData)) {
+							olockConfigSet.Add(string(configData))
+						}
+					} else {
+						logInvalid("object-lock", err)
 					}
 				}
 				if s.SSEConfig != nil {
 					configData, err := base64.StdEncoding.DecodeString(*s.SSEConfig)
-					if err != nil {
-						continue
-					}
-					sseCfgCount++
-					if !sseCfgSet.Contains(string(configData)) {
-						sseCfgSet.Add(string(configData))
+					if err == nil {
+						validSSECfg[i] = true
+						sseCfgCount++
+						if !sseCfgSet.Contains(string(configData)) {
+							sseCfgSet.Add(string(configData))
+						}
+					} else {
+						logInvalid("sse", err)
 					}
 				}
 				if s.CorsConfig != nil {
 					if _, err := decodeCORSReplicationPayload(s.CorsConfig); err == nil {
+						validCorsCfg[i] = true
 						corsCfgCount++
+					} else {
+						logInvalid("cors", err)
 					}
 				}
 				ss, ok := info.StatsSummary[s.DeploymentID]
@@ -3491,23 +3574,26 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 					ss.ReplicatedBuckets++
 				}
 				ss.TotalBucketsCount++
-				if tagCount > 0 {
+				if validTags[i] {
 					ss.TotalTagsCount++
 				}
-				if olockCfgCount > 0 {
+				if validObjectLockCfg[i] {
 					ss.TotalLockConfigCount++
 				}
-				if sseCfgCount > 0 {
+				if validSSECfg[i] {
 					ss.TotalSSEConfigCount++
 				}
-				if s.CorsConfig != nil {
+				if validCorsCfg[i] {
 					ss.TotalCorsConfigCount++
 				}
-				if versionCfgCount > 0 {
+				if validVersionCfg[i] {
 					ss.TotalVersioningConfigCount++
 				}
-				if len(policies) > 0 {
+				if validPolicies[i] {
 					ss.TotalBucketPoliciesCount++
+				}
+				if validQuotaCfg[i] {
+					ss.TotalQuotaConfigCount++
 				}
 				info.StatsSummary[s.DeploymentID] = ss
 			}
@@ -3542,13 +3628,13 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 					PolicyMismatch:           policyMismatch,
 					ReplicationCfgMismatch:   replCfgMismatch,
 					QuotaCfgMismatch:         quotaCfgMismatch,
-					HasReplicationCfg:        s.ReplicationConfig != nil,
-					HasTagsSet:               s.Tags != nil,
-					HasOLockConfigSet:        s.ObjectLockConfig != nil,
-					HasPolicySet:             s.Policy != nil,
+					HasReplicationCfg:        validReplCfg[i],
+					HasTagsSet:               validTags[i],
+					HasOLockConfigSet:        validObjectLockCfg[i],
+					HasPolicySet:             validPolicies[i],
 					HasQuotaCfgSet:           quotaCfgSet,
-					HasSSECfgSet:             s.SSEConfig != nil,
-					HasCorsCfgSet:            s.CorsConfig != nil,
+					HasSSECfgSet:             validSSECfg[i],
+					HasCorsCfgSet:            validCorsCfg[i],
 				}
 				var m srBucketMetaInfo
 				if len(bucketStats[s.Bucket]) > dIdx {
@@ -3574,11 +3660,14 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 				if !corsCfgMismatch && corsCfgCount == numSites {
 					sum.ReplicatedCorsConfig++
 				}
-				if !policyMismatch && len(policies) == numSites {
+				if !policyMismatch && policyCount == numSites {
 					sum.ReplicatedBucketPolicies++
 				}
 				if !tagMismatch && tagCount == numSites {
 					sum.ReplicatedTags++
+				}
+				if !quotaCfgMismatch && quotaCfgCount == numSites {
+					sum.ReplicatedQuotaConfig++
 				}
 				info.StatsSummary[s.DeploymentID] = sum
 			}
@@ -5322,12 +5411,7 @@ func (c *SiteReplicationSys) healOLockConfigMetadata(ctx context.Context, objAPI
 			return wrapSRErr(err)
 		}
 		peerName := info.Sites[dID].Name
-		err = admClient.SRPeerReplicateBucketMeta(ctx, madmin.SRBucketMeta{
-			Type:      madmin.SRBucketMetaTypeObjectLockConfig,
-			Bucket:    bucket,
-			Tags:      latestObjLockConfig,
-			UpdatedAt: lastUpdate,
-		})
+		err = admClient.SRPeerReplicateBucketMeta(ctx, newSRBucketObjectLockMeta(bucket, latestObjLockConfig, lastUpdate))
 		if err != nil {
 			replLogIf(ctx, c.annotatePeerErr(peerName, replicateBucketMetadata,
 				fmt.Errorf("Unable to heal object lock config metadata for peer %s from peer %s : %w",

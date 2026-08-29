@@ -1844,12 +1844,7 @@ func (api objectAPIHandlers) PutBucketObjectLockConfigHandler(w http.ResponseWri
 	// We encode the xml bytes as base64 to ensure there are no encoding
 	// errors.
 	cfgStr := base64.StdEncoding.EncodeToString(configData)
-	replLogIf(ctx, globalSiteReplicationSys.BucketMetaHook(ctx, madmin.SRBucketMeta{
-		Type:             madmin.SRBucketMetaTypeObjectLockConfig,
-		Bucket:           bucket,
-		ObjectLockConfig: &cfgStr,
-		UpdatedAt:        updatedAt,
-	}))
+	replLogIf(ctx, globalSiteReplicationSys.BucketMetaHook(ctx, newSRBucketObjectLockMeta(bucket, &cfgStr, updatedAt)))
 
 	// Write success response.
 	writeSuccessResponseHeadersOnly(w)
