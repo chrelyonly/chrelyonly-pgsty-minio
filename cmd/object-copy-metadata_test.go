@@ -508,10 +508,9 @@ func testAPICopyObjectSSECKeyRotationNullVersionWithCompression(obj ObjectLayer,
 	}
 }
 
-// TestAPICopyObjectSSECKeyRotationNullVersionWrongKey pins the source key
-// authentication of the re-encrypting fallback. A zero byte source has no data
-// to decrypt, so the copy would otherwise reach the destination write without
-// ever proving the caller holds the current key.
+// TestAPICopyObjectSSECKeyRotationNullVersionWrongKey pins source-key
+// authentication in both the standalone rotation fix and the later zero-byte
+// read hardening.
 func TestAPICopyObjectSSECKeyRotationNullVersionWrongKey(t *testing.T) {
 	defer DetectTestLeak(t)()
 	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
