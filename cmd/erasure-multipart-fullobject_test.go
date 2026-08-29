@@ -516,7 +516,7 @@ func testAPICompleteMultipartChecksumTypeMismatch(obj ObjectLayer, instanceType,
 		}
 	})
 
-	t.Run("crc64nvme-composite-remains-canonicalized", func(t *testing.T) {
+	t.Run("crc64nvme-composite-completion-is-rejected", func(t *testing.T) {
 		crc64Type := hash.ChecksumCRC64NVME
 		objectName := "type-mismatch/crc64nvme-composite"
 		uploadID := newMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName,
@@ -527,8 +527,11 @@ func testAPICompleteMultipartChecksumTypeMismatch(obj ObjectLayer, instanceType,
 				crc64Type.Key():       mustChecksum(t, crc64Type, full),
 				xhttp.AmzChecksumType: xhttp.AmzChecksumTypeComposite,
 			})
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: CRC64NVME canonicalization changed: %d %s", instanceType, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusBadRequest || apiErrorCode(t, rec) != "BadDigest" {
+			t.Fatalf("%s: CRC64NVME composite completion returned %d %s", instanceType, rec.Code, rec.Body.String())
+		}
+		if _, err := obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{}); err == nil {
+			t.Fatalf("%s: object was created despite a rejected CRC64NVME checksum type", instanceType)
 		}
 	})
 }

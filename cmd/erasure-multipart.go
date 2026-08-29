@@ -1185,13 +1185,7 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 			}
 		}
 		if opts.wantChecksumType != "" {
-			providedObjectType := opts.wantChecksumType
-			// CRC64NVME is always canonicalized to FULL_OBJECT. Preserve this
-			// behavior until its exact AWS wire semantics have been probed.
-			if checksumType.Base().Is(hash.ChecksumCRC64NVME) {
-				providedObjectType = xhttp.AmzChecksumTypeFullObject
-			}
-			if providedObjectType != expectedType.ObjType() {
+			if opts.wantChecksumType != expectedType.ObjType() {
 				return oi, completeMultipartChecksumTypeMismatch(opts.wantChecksumType, expectedType.ObjType())
 			}
 		}
