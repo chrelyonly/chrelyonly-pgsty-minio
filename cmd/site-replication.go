@@ -1727,6 +1727,26 @@ func (c *SiteReplicationSys) PeerBucketTaggingHandler(ctx context.Context, bucke
 	return nil
 }
 
+func newSRBucketObjectLockMeta(bucket string, config *string, updatedAt time.Time) madmin.SRBucketMeta {
+	return madmin.SRBucketMeta{
+		Type:             madmin.SRBucketMetaTypeObjectLockConfig,
+		Bucket:           bucket,
+		ObjectLockConfig: config,
+		UpdatedAt:        updatedAt,
+	}
+}
+
+func srObjectLockPayload(item madmin.SRBucketMeta) *string {
+	if item.ObjectLockConfig != nil {
+		return item.ObjectLockConfig
+	}
+	return item.Tags
+}
+
+func (c *SiteReplicationSys) peerBucketObjectLockConfigItem(ctx context.Context, item madmin.SRBucketMeta) error {
+	return c.PeerBucketObjectLockConfigHandler(ctx, item.Bucket, srObjectLockPayload(item), item.UpdatedAt)
+}
+
 // PeerBucketObjectLockConfigHandler - sets object lock on local bucket.
 func (c *SiteReplicationSys) PeerBucketObjectLockConfigHandler(ctx context.Context, bucket string, objectLockData *string, updatedAt time.Time) error {
 	if objectLockData != nil {
@@ -2176,12 +2196,7 @@ func (c *SiteReplicationSys) syncToAllPeers(ctx context.Context, addOpts madmin.
 		objLockCfgData, tm := meta.ObjectLockConfigXML, meta.ObjectLockConfigUpdatedAt
 		if len(objLockCfgData) > 0 {
 			objLockStr := base64.StdEncoding.EncodeToString(objLockCfgData)
-			err = c.BucketMetaHook(ctx, madmin.SRBucketMeta{
-				Type:      madmin.SRBucketMetaTypeObjectLockConfig,
-				Bucket:    bucket,
-				Tags:      &objLockStr,
-				UpdatedAt: tm,
-			})
+			err = c.BucketMetaHook(ctx, newSRBucketObjectLockMeta(bucket, &objLockStr, tm))
 			if err != nil {
 				return errSRBucketMetaError(err)
 			}
@@ -5322,12 +5337,7 @@ func (c *SiteReplicationSys) healOLockConfigMetadata(ctx context.Context, objAPI
 			return wrapSRErr(err)
 		}
 		peerName := info.Sites[dID].Name
-		err = admClient.SRPeerReplicateBucketMeta(ctx, madmin.SRBucketMeta{
-			Type:      madmin.SRBucketMetaTypeObjectLockConfig,
-			Bucket:    bucket,
-			Tags:      latestObjLockConfig,
-			UpdatedAt: lastUpdate,
-		})
+		err = admClient.SRPeerReplicateBucketMeta(ctx, newSRBucketObjectLockMeta(bucket, latestObjLockConfig, lastUpdate))
 		if err != nil {
 			replLogIf(ctx, c.annotatePeerErr(peerName, replicateBucketMetadata,
 				fmt.Errorf("Unable to heal object lock config metadata for peer %s from peer %s : %w",
