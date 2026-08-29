@@ -777,8 +777,7 @@ func generateListObjectsV2Response(ctx context.Context, bucket, prefix, token, n
 type metaCheckFn = func(name string, action policy.Action) (s3Err APIErrorCode)
 
 // generates CopyObjectResponse from the committed object information.
-func generateCopyObjectResponse(oi ObjectInfo, h http.Header) CopyObjectResponse {
-	cs, _ := oi.decryptChecksums(0, h)
+func generateCopyObjectResponse(oi ObjectInfo, cs map[string]string) CopyObjectResponse {
 	return CopyObjectResponse{
 		ETag:              "\"" + oi.ETag + "\"",
 		LastModified:      amztime.ISO8601Format(oi.ModTime.UTC()),

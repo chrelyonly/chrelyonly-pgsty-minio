@@ -420,7 +420,73 @@ func testAPICompleteMultipartChecksumTypeMismatch(obj ObjectLayer, instanceType,
 				t.Fatalf("%s: object was created despite a rejected checksum type", instanceType)
 			}
 		})
+
+		t.Run(test.name+"-type-only", func(t *testing.T) {
+			objectName := "type-mismatch/type-only-" + test.name
+			uploadID := newMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName,
+				typ.String(), test.createdType)
+			etags := uploadPartsHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, typ, partData)
+			partCS := []string{mustChecksum(t, typ, partData[0]), mustChecksum(t, typ, partData[1])}
+			rec := completeMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, etags, partCS,
+				map[string]string{xhttp.AmzChecksumType: test.providedType})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s: checksum type-only mismatch returned %d, want 400", instanceType, rec.Code)
+			}
+			apiErr := apiError(t, rec)
+			if apiErr.Code != "BadDigest" {
+				t.Fatalf("%s: expected BadDigest, got %q", instanceType, apiErr.Code)
+			}
+			wantMessage := fmt.Sprintf("The checksum type %s does not match the multipart upload checksum type %s.", test.providedType, test.createdType)
+			if apiErr.Message != wantMessage {
+				t.Fatalf("%s: expected message %q, got %q", instanceType, wantMessage, apiErr.Message)
+			}
+			if _, err := obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{}); err == nil {
+				t.Fatalf("%s: object was created despite a rejected checksum type-only assertion", instanceType)
+			}
+		})
 	}
+
+	for _, test := range []struct {
+		name         string
+		providedType string
+		withChecksum bool
+	}{
+		{name: "unknown-type-only", providedType: "NOT_A_TYPE"},
+		{name: "lowercase-type-only", providedType: "full_object"},
+		{name: "unknown-with-checksum", providedType: "NOT_A_TYPE", withChecksum: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			objectName := "type-mismatch/invalid-" + test.name
+			uploadID := newMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName,
+				typ.String(), xhttp.AmzChecksumTypeComposite)
+			etags := uploadPartsHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, typ, partData)
+			partCS := []string{mustChecksum(t, typ, partData[0]), mustChecksum(t, typ, partData[1])}
+			headers := map[string]string{xhttp.AmzChecksumType: test.providedType}
+			if test.withChecksum {
+				headers[typ.Key()] = mustChecksum(t, typ, full)
+			}
+			rec := completeMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, etags, partCS, headers)
+			if rec.Code != http.StatusBadRequest || apiErrorCode(t, rec) != "InvalidArgument" {
+				t.Fatalf("%s: invalid checksum type returned %d %s", instanceType, rec.Code, rec.Body.String())
+			}
+			if _, err := obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{}); err == nil {
+				t.Fatalf("%s: object was created despite an invalid checksum type", instanceType)
+			}
+		})
+	}
+
+	t.Run("matching-type-only", func(t *testing.T) {
+		objectName := "type-mismatch/matching-type-only"
+		uploadID := newMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName,
+			typ.String(), xhttp.AmzChecksumTypeComposite)
+		etags := uploadPartsHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, typ, partData)
+		partCS := []string{mustChecksum(t, typ, partData[0]), mustChecksum(t, typ, partData[1])}
+		rec := completeMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, etags, partCS,
+			map[string]string{xhttp.AmzChecksumType: xhttp.AmzChecksumTypeComposite})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: matching checksum type-only assertion returned %d %s", instanceType, rec.Code, rec.Body.String())
+		}
+	})
 
 	t.Run("omitted-type-is-not-composite", func(t *testing.T) {
 		objectName := "type-mismatch/omitted-type"
@@ -465,6 +531,23 @@ func testAPICompleteMultipartChecksumTypeMismatch(obj ObjectLayer, instanceType,
 		apiRouter.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest || apiErrorCode(t, rec) != "InvalidArgument" {
 			t.Fatalf("%s: CRC64NVME/COMPOSITE returned %d %s", instanceType, rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("crc64nvme-composite-completion-is-rejected", func(t *testing.T) {
+		crc64Type := hash.ChecksumCRC64NVME
+		objectName := "type-mismatch/crc64nvme-composite-completion"
+		uploadID := newMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName,
+			crc64Type.String(), xhttp.AmzChecksumTypeFullObject)
+		etags := uploadPartsHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, crc64Type, partData)
+		partCS := []string{mustChecksum(t, crc64Type, partData[0]), mustChecksum(t, crc64Type, partData[1])}
+		rec := completeMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, etags, partCS,
+			map[string]string{xhttp.AmzChecksumType: xhttp.AmzChecksumTypeComposite})
+		if rec.Code != http.StatusBadRequest || apiErrorCode(t, rec) != "BadDigest" {
+			t.Fatalf("%s: CRC64NVME composite completion returned %d %s", instanceType, rec.Code, rec.Body.String())
+		}
+		if _, err := obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{}); err == nil {
+			t.Fatalf("%s: object was created despite a rejected CRC64NVME checksum type", instanceType)
 		}
 	})
 }

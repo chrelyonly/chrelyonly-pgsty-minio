@@ -40,7 +40,7 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 )
 
-const federatedTestUserAgent = "MinIO (linux; amd64) minio-go/v7.0.99 minio-federated/RELEASE.TEST"
+const federatedTestUserAgent = "MinIO (linux; amd64) minio-go/v7.3.1 minio-federated/RELEASE.TEST"
 
 func TestAPIFederatedUploadPartChecksumResponse(t *testing.T) {
 	defer DetectTestLeak(t)()

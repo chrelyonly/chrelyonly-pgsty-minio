@@ -22,8 +22,11 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/minio/minio/internal/config"
 )
 
 func Test_readFromSecret(t *testing.T) {
@@ -241,6 +244,19 @@ func Test_minioEnvironFromFileWhitespaceAndValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "named target punctuation and unicode",
+			content: "MINIO_NOTIFY_WEBHOOK_ENABLE_my-hook=off\n" +
+				"MINIO_NOTIFY_WEBHOOK_ENABLE_site.eu=off\n" +
+				"MINIO_NOTIFY_WEBHOOK_ENABLE_team:blue=off\n" +
+				"MINIO_NOTIFY_WEBHOOK_ENABLE_目标=off",
+			want: []envKV{
+				{Key: "MINIO_NOTIFY_WEBHOOK_ENABLE_my-hook", Value: "off"},
+				{Key: "MINIO_NOTIFY_WEBHOOK_ENABLE_site.eu", Value: "off"},
+				{Key: "MINIO_NOTIFY_WEBHOOK_ENABLE_team:blue", Value: "off"},
+				{Key: "MINIO_NOTIFY_WEBHOOK_ENABLE_目标", Value: "off"},
+			},
+		},
+		{
 			name:        "missing separator redacts the line",
 			content:     "MINIO_ROOT_PASSWORD=valid\nsuper-secret-without-equals",
 			errLine:     2,
@@ -255,18 +271,12 @@ func Test_minioEnvironFromFileWhitespaceAndValidation(t *testing.T) {
 			errExcludes: "empty-name-secret",
 		},
 		{
-			name:        "digit leading name",
-			content:     "1MINIO_ROOT_USER=digit-leading-secret",
-			errLine:     1,
-			errContains: `invalid environment variable name "1MINIO_ROOT_USER"`,
-			errExcludes: "digit-leading-secret",
-		},
-		{
-			name:        "hyphenated name",
-			content:     "MINIO-ROOT-USER=hyphen-secret",
-			errLine:     1,
-			errContains: `invalid environment variable name "MINIO-ROOT-USER"`,
-			errExcludes: "hyphen-secret",
+			name:    "os compatible leading digit and punctuation",
+			content: "1MINIO_ROOT_USER=digit-leading-secret\n-MINIO-ROOT-USER=hyphen-secret",
+			want: []envKV{
+				{Key: "1MINIO_ROOT_USER", Value: "digit-leading-secret"},
+				{Key: "-MINIO-ROOT-USER", Value: "hyphen-secret"},
+			},
 		},
 		{
 			name:        "whitespace in name",
@@ -281,6 +291,13 @@ func Test_minioEnvironFromFileWhitespaceAndValidation(t *testing.T) {
 			errLine:     1,
 			errContains: "invalid environment variable name",
 			errExcludes: "nul-name-secret",
+		},
+		{
+			name:        "format character in name",
+			content:     "MINIO\u200bROOT=format-secret",
+			errLine:     1,
+			errContains: "invalid environment variable name",
+			errExcludes: "format-secret",
 		},
 		{
 			name:        "NUL in value",
@@ -340,5 +357,18 @@ func Test_minioEnvironFromFileWhitespaceAndValidation(t *testing.T) {
 				t.Errorf("expected no entries on parse error, got %v", got)
 			}
 		})
+	}
+}
+
+func TestConfigEnvFileNamedTargetDiscovery(t *testing.T) {
+	key := "MINIO_NOTIFY_WEBHOOK_ENABLE_my-hook"
+	t.Setenv(key, "off")
+
+	targets, err := (config.Config{}).GetAvailableTargets(config.NotifyWebhookSubSys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(targets, "my-hook") {
+		t.Fatalf("named target %q not discovered from %s: %v", "my-hook", key, targets)
 	}
 }
