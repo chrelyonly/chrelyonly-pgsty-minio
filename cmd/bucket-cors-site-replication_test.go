@@ -573,6 +573,107 @@ func testSiteReplicationStatusDetectsCorsTimestampMismatch(obj ObjectLayer, _ st
 	}
 }
 
+func TestSiteReplicationStatusCountsCorsPerSite(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testSiteReplicationStatusCountsCorsPerSite,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testSiteReplicationStatusCountsCorsPerSite(obj ObjectLayer, _ string, bucket string, _ http.Handler, credentials auth.Credentials, t *testing.T) {
+	ctx := t.Context()
+	meta, err := readBucketMetadata(ctx, obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localID := globalDeploymentID()
+	remoteID := "remote-cors-count"
+	encoded := base64.StdEncoding.EncodeToString([]byte(testSiteReplicationCORSDoc))
+	remoteInfo := madmin.SRInfo{
+		DeploymentID: remoteID,
+		Buckets: map[string]madmin.SRBucketInfo{
+			bucket: {Bucket: bucket, CreatedAt: meta.Created},
+		},
+	}
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(remoteInfo); err != nil {
+			t.Errorf("encode remote metadata: %v", err)
+		}
+	}))
+	defer remote.Close()
+
+	serviceCred, err := auth.CreateCredentials("cors-count-service", "cors-count-service-secret-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceCred.ParentUser = credentials.AccessKey
+	if _, err = globalIAMSys.store.AddServiceAccount(ctx, serviceCred); err != nil {
+		t.Fatal(err)
+	}
+	defer globalIAMSys.DeleteServiceAccount(ctx, serviceCred.AccessKey, false)
+
+	globalSiteReplicationSys.Lock()
+	oldEnabled := globalSiteReplicationSys.enabled
+	oldState := globalSiteReplicationSys.state
+	globalSiteReplicationSys.enabled = true
+	globalSiteReplicationSys.state = srState{
+		Name:                    "cors-count-test",
+		ServiceAccountAccessKey: serviceCred.AccessKey,
+		Peers: map[string]madmin.PeerInfo{
+			localID:  {Name: "local", DeploymentID: localID},
+			remoteID: {Name: "remote", DeploymentID: remoteID, Endpoint: remote.URL},
+		},
+	}
+	globalSiteReplicationSys.Unlock()
+	defer func() {
+		globalSiteReplicationSys.Lock()
+		globalSiteReplicationSys.enabled = oldEnabled
+		globalSiteReplicationSys.state = oldState
+		globalSiteReplicationSys.Unlock()
+	}()
+
+	check := func(name string, wantLocal, wantRemote int) {
+		t.Helper()
+		status, err := globalSiteReplicationSys.siteReplicationStatus(ctx, obj, madmin.SRStatusOptions{Buckets: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := status.StatsSummary[localID].TotalCorsConfigCount; got != wantLocal {
+			t.Fatalf("%s: local TotalCorsConfigCount = %d, want %d", name, got, wantLocal)
+		}
+		if got := status.StatsSummary[remoteID].TotalCorsConfigCount; got != wantRemote {
+			t.Fatalf("%s: remote TotalCorsConfigCount = %d, want %d", name, got, wantRemote)
+		}
+	}
+
+	check("neither site", 0, 0)
+	t1 := meta.Created.Add(time.Second)
+	if err = globalSiteReplicationSys.PeerBucketCorsConfigHandler(ctx, bucket, &encoded, t1); err != nil {
+		t.Fatal(err)
+	}
+	check("local site only", 1, 0)
+
+	t2 := t1.Add(time.Second)
+	if err = globalSiteReplicationSys.PeerBucketCorsConfigHandler(ctx, bucket, nil, t2); err != nil {
+		t.Fatal(err)
+	}
+	remoteInfo.Buckets[bucket] = madmin.SRBucketInfo{
+		Bucket: bucket, CreatedAt: meta.Created, CorsConfig: &encoded, CorsConfigUpdatedAt: t2,
+	}
+	check("remote site only", 0, 1)
+
+	t3 := t2.Add(time.Second)
+	if err = globalSiteReplicationSys.PeerBucketCorsConfigHandler(ctx, bucket, &encoded, t3); err != nil {
+		t.Fatal(err)
+	}
+	remoteInfo.Buckets[bucket] = madmin.SRBucketInfo{
+		Bucket: bucket, CreatedAt: meta.Created, CorsConfig: &encoded, CorsConfigUpdatedAt: t3,
+	}
+	check("both sites", 1, 1)
+}
+
 func TestCORSReplicationStateOrdering(t *testing.T) {
 	at := UTCNow()
 	baseline := newCORSReplicationState(nil, time.Time{})
