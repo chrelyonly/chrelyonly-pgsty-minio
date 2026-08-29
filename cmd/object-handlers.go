@@ -1107,6 +1107,14 @@ func cloneRequestWithoutCopyReplicationHeaders(r *http.Request) *http.Request {
 	return clone
 }
 
+func copyDestinationSSEHeaders(h http.Header) http.Header {
+	dst := h.Clone()
+	dst.Del(xhttp.AmzServerSideEncryptionCopyCustomerAlgorithm)
+	dst.Del(xhttp.AmzServerSideEncryptionCopyCustomerKey)
+	dst.Del(xhttp.AmzServerSideEncryptionCopyCustomerKeyMD5)
+	return dst
+}
+
 // getRemoteInstanceTransport contains a roundtripper for external (not peers) servers
 var remoteInstanceTransport atomic.Value
 
@@ -1816,14 +1824,16 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 
 	origETag := objInfo.ETag
 	objInfo.ETag = getDecryptedETag(r.Header, objInfo, false)
-	response := generateCopyObjectResponse(objInfo, r.Header)
+	dstHeaders := copyDestinationSSEHeaders(r.Header)
+	checksums, _ := objInfo.decryptChecksums(0, dstHeaders)
+	response := generateCopyObjectResponse(objInfo, checksums)
 	encodedSuccessResponse := encodeResponse(response)
 
 	if dsc := mustReplicate(ctx, dstBucket, dstObject, objInfo.getMustReplicateOptions(replication.ObjectReplicationType, dstOpts)); dsc.ReplicateAny() {
 		scheduleReplication(ctx, objInfo, objectAPI, dsc, replication.ObjectReplicationType)
 	}
 
-	setPutObjHeaders(w, objInfo, false, r.Header)
+	setPutObjHeadersWithChecksum(w, objInfo, false, checksums)
 	// We must not use the http.Header().Set method here because some (broken)
 	// clients expect the x-amz-copy-source-version-id header key to be literally
 	// "x-amz-copy-source-version-id"- not in canonicalized form, preserve it.
