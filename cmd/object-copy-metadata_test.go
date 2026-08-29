@@ -270,6 +270,64 @@ func testAPICopyObjectMetadataOnlyNullVersion(obj ObjectLayer, instanceType, buc
 	}
 }
 
+func TestAPICopyObjectMetadataOnlyNullVersionCompressesRewrite(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testAPICopyObjectMetadataOnlyNullVersionCompressesRewrite,
+		endpoints:  []string{"CopyObject", "PutObject", "GetObject"},
+	})
+}
+
+func testAPICopyObjectMetadataOnlyNullVersionCompressesRewrite(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
+) {
+	globalCompressConfigMu.Lock()
+	previousCompression := globalCompressConfig
+	globalCompressConfig.Enabled = false
+	globalCompressConfigMu.Unlock()
+	defer func() {
+		globalCompressConfigMu.Lock()
+		globalCompressConfig = previousCompression
+		globalCompressConfigMu.Unlock()
+	}()
+
+	data := bytes.Repeat([]byte("null-version-compress-rewrite-"), 64*1024)
+	want := mustChecksum(t, hash.ChecksumCRC32, data)
+	object := "copy-metadata/null-version-compress.txt"
+	putCopyChecksumSource(t, apiRouter, credentials, bucketName, object, data,
+		map[string]string{xhttp.AmzChecksumCRC32: want})
+
+	before, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.IsCompressed() || before.VersionID != "" {
+		t.Fatalf("%s: invalid null-version precondition: compressed=%v versionID=%q",
+			instanceType, before.IsCompressed(), before.VersionID)
+	}
+	if _, err := globalBucketMetadataSys.Update(t.Context(), bucketName,
+		bucketVersioningConfig, enabledBucketVersioningConfig); err != nil {
+		t.Fatalf("%s: unable to enable versioning: %v", instanceType, err)
+	}
+
+	restoreCopyCompression := setCopyChecksumCompression(false)
+	defer restoreCopyCompression()
+	rec := copyChecksumRequest(t, apiRouter, credentials, bucketName, object, object,
+		map[string]string{xhttp.AmzMetadataDirective: "REPLACE"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s: metadata-only CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
+	}
+
+	after := assertCopyChecksum(t, obj, bucketName, object, hash.ChecksumCRC32, data, true, nil)
+	if after.VersionID == "" {
+		t.Fatalf("%s: versioned copy did not create a new version", instanceType)
+	}
+	if got := readCopyChecksumObject(t, obj, bucketName, object, ObjectOptions{}); !bytes.Equal(got, data) {
+		t.Fatalf("%s: copied object body differs: got %d bytes, want %d", instanceType, len(got), len(data))
+	}
+}
+
 func TestCopyRewritesObjectData(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -342,6 +400,29 @@ func TestAPICopyObjectSSECKeyRotationNullVersion(t *testing.T) {
 func testAPICopyObjectSSECKeyRotationNullVersion(obj ObjectLayer, instanceType, bucketName string,
 	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
 ) {
+	testAPICopyObjectSSECKeyRotationNullVersionWithCompression(obj, instanceType, bucketName,
+		apiRouter, credentials, false, t)
+}
+
+func TestAPICopyObjectSSECKeyRotationNullVersionCompressesRewrite(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testAPICopyObjectSSECKeyRotationNullVersionCompressesRewrite,
+		endpoints:  []string{"CopyObject", "PutObject", "GetObject"},
+	})
+}
+
+func testAPICopyObjectSSECKeyRotationNullVersionCompressesRewrite(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
+) {
+	testAPICopyObjectSSECKeyRotationNullVersionWithCompression(obj, instanceType, bucketName,
+		apiRouter, credentials, true, t)
+}
+
+func testAPICopyObjectSSECKeyRotationNullVersionWithCompression(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, compressAtCopy bool, t *testing.T,
+) {
 	previousTLS := globalIsTLS
 	globalIsTLS = true
 	defer func() { globalIsTLS = previousTLS }()
@@ -374,6 +455,10 @@ func testAPICopyObjectSSECKeyRotationNullVersion(obj ObjectLayer, instanceType, 
 	}
 	if !globalBucketVersioningSys.PrefixEnabled(bucketName, object) {
 		t.Fatalf("%s: versioning did not become enabled", instanceType)
+	}
+	if compressAtCopy {
+		restoreCompression := setCopyChecksumCompression(true)
+		defer restoreCompression()
 	}
 
 	rec := copyChecksumRequest(t, apiRouter, credentials, bucketName, object, object, map[string]string{
@@ -411,7 +496,7 @@ func testAPICopyObjectSSECKeyRotationNullVersion(obj ObjectLayer, instanceType, 
 	for key, value := range getHeaders {
 		decryptHeaders.Set(key, value)
 	}
-	after := assertCopyChecksum(t, obj, bucketName, object, hash.ChecksumCRC32, data, false, decryptHeaders)
+	after := assertCopyChecksum(t, obj, bucketName, object, hash.ChecksumCRC32, data, compressAtCopy, decryptHeaders)
 	if after.VersionID == "" {
 		t.Fatalf("%s: rotation into a versioned bucket did not create a new version", instanceType)
 	}
@@ -481,6 +566,19 @@ func testAPICopyObjectSSECKeyRotationNullVersionWrongKey(obj ObjectLayer, instan
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("%s: rotation with an incorrect source key returned %d, want %d: %s",
 			instanceType, rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	rec = copyChecksumRequest(t, apiRouter, credentials, bucketName, object, object, map[string]string{
+		xhttp.AmzServerSideEncryptionCustomerAlgorithm:     xhttp.AmzEncryptionAES,
+		xhttp.AmzServerSideEncryptionCustomerKey:           base64.StdEncoding.EncodeToString(newKey),
+		xhttp.AmzServerSideEncryptionCustomerKeyMD5:        base64.StdEncoding.EncodeToString(newMD5[:]),
+		xhttp.AmzServerSideEncryptionCopyCustomerAlgorithm: xhttp.AmzEncryptionAES,
+		xhttp.AmzServerSideEncryptionCopyCustomerKey:       base64.StdEncoding.EncodeToString(newKey),
+		xhttp.AmzServerSideEncryptionCopyCustomerKeyMD5:    base64.StdEncoding.EncodeToString(newMD5[:]),
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("%s: rotation with equal invalid keys returned %d, want %d: %s",
+			instanceType, rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
 	after, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
