@@ -77,6 +77,11 @@ func testAPIGetObjectAttributesAuthenticatesSSECKey(_ ObjectLayer, instanceType,
 		if rec := objectAttributesSSECRequest(t, apiRouter, credentials, bucketName, object, nil); rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s/%s: missing key returned %d, want %d: %s", instanceType, test.name, rec.Code, http.StatusBadRequest, rec.Body.String())
 		}
+		if rec := objectAttributesSSECRequest(t, apiRouter, credentials, bucketName, object, map[string]string{
+			xhttp.MinIOSourceReplicationRequest: "true",
+		}); rec.Code != http.StatusOK {
+			t.Fatalf("%s/%s: replication request returned %d: %s", instanceType, test.name, rec.Code, rec.Body.String())
+		}
 	}
 }
 
