@@ -785,6 +785,10 @@ func corsHandler(handler http.Handler) http.Handler {
 	}
 	globalCors := cors.New(opts).Handler(handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") == "" {
+			handler.ServeHTTP(w, r)
+			return
+		}
 		if bucket, _ := request2BucketObjectName(r); bucket != "" && globalBucketMetadataSys != nil {
 			cfg, _, err := globalBucketMetadataSys.GetCorsConfig(bucket)
 			if err == nil && cfg != nil {
