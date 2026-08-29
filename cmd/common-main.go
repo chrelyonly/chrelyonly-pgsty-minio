@@ -37,6 +37,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/dustin/go-humanize"
 	fcolor "github.com/fatih/color"
@@ -542,19 +543,15 @@ func (e envKV) String() string {
 }
 
 func isValidEnvName(name string) bool {
-	if name == "" || !isEnvNameStart(name[0]) {
+	if name == "" || !utf8.ValidString(name) {
 		return false
 	}
-	for i := 1; i < len(name); i++ {
-		if !isEnvNameStart(name[i]) && (name[i] < '0' || name[i] > '9') {
+	for _, ch := range name {
+		if ch == '=' || unicode.IsSpace(ch) || !unicode.IsGraphic(ch) {
 			return false
 		}
 	}
 	return true
-}
-
-func isEnvNameStart(ch byte) bool {
-	return ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
 }
 
 func trimExportPrefix(envEntry string) string {

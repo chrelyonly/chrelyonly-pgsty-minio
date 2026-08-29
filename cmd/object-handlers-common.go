@@ -353,6 +353,11 @@ func isETagEqual(left, right string) bool {
 // upon a success Put/Copy/CompleteMultipart/Delete requests
 // to activate delete only headers set delete as true
 func setPutObjHeaders(w http.ResponseWriter, objInfo ObjectInfo, del bool, h http.Header) {
+	cs, _ := objInfo.decryptChecksums(0, h)
+	setPutObjHeadersWithChecksum(w, objInfo, del, cs)
+}
+
+func setPutObjHeadersWithChecksum(w http.ResponseWriter, objInfo ObjectInfo, del bool, cs map[string]string) {
 	// We must not use the http.Header().Set method here because some (broken)
 	// clients expect the ETag header key to be literally "ETag" - not "Etag" (case-sensitive).
 	// Therefore, we have to set the ETag directly as map entry.
@@ -374,7 +379,6 @@ func setPutObjHeaders(w http.ResponseWriter, objInfo ObjectInfo, del bool, h htt
 			lc.SetPredictionHeaders(w, objInfo.ToLifecycleOpts())
 		}
 	}
-	cs, _ := objInfo.decryptChecksums(0, h)
 	hash.AddChecksumHeader(w, cs)
 }
 
