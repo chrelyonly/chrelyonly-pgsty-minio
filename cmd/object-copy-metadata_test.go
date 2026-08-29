@@ -508,10 +508,9 @@ func testAPICopyObjectSSECKeyRotationNullVersionWithCompression(obj ObjectLayer,
 	}
 }
 
-// TestAPICopyObjectSSECKeyRotationNullVersionWrongKey pins the source key
-// authentication of the re-encrypting fallback. A zero byte source has no data
-// to decrypt, so the copy would otherwise reach the destination write without
-// ever proving the caller holds the current key.
+// TestAPICopyObjectSSECKeyRotationNullVersionWrongKey pins source-key
+// authentication in both the standalone rotation fix and the later zero-byte
+// read hardening.
 func TestAPICopyObjectSSECKeyRotationNullVersionWrongKey(t *testing.T) {
 	defer DetectTestLeak(t)()
 	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
@@ -576,9 +575,11 @@ func testAPICopyObjectSSECKeyRotationNullVersionWrongKey(obj ObjectLayer, instan
 		xhttp.AmzServerSideEncryptionCopyCustomerKey:       base64.StdEncoding.EncodeToString(newKey),
 		xhttp.AmzServerSideEncryptionCopyCustomerKeyMD5:    base64.StdEncoding.EncodeToString(newMD5[:]),
 	})
-	if rec.Code != http.StatusBadRequest {
+	// The zero-byte read path authenticates the source key before the
+	// rotation-specific equal-key distinction, matching non-empty reads.
+	if rec.Code != http.StatusForbidden {
 		t.Fatalf("%s: rotation with equal invalid keys returned %d, want %d: %s",
-			instanceType, rec.Code, http.StatusBadRequest, rec.Body.String())
+			instanceType, rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 
 	after, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})

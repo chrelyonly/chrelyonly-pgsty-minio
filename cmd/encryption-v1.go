@@ -356,9 +356,9 @@ func rotateKey(ctx context.Context, oldKey []byte, newKeyID string, newKey []byt
 }
 
 // checkSSECCopySourceKey authenticates the SSE-C copy source key against the
-// sealed object key held in metadata. GetObjectNInfo builds no decryptor for a
-// zero byte object, so a copy whose data path never decrypts anything has to
-// verify the source key explicitly. Mirrors the errors rotateKey reports.
+// sealed object key held in metadata. This keeps the diverted rotation safe on
+// its own and remains defense in depth when the read path also authenticates
+// zero-byte objects. Mirrors the errors rotateKey reports.
 func checkSSECCopySourceKey(h http.Header, metadata map[string]string, bucket, object string, newKey []byte) error {
 	oldKey, err := ParseSSECopyCustomerRequest(h, metadata)
 	if err != nil {
@@ -572,6 +572,24 @@ func DecryptCopyRequestR(client io.Reader, h http.Header, bucket, object string,
 		}
 	}
 	return newDecryptReader(client, key, bucket, object, seqNumber, metadata)
+}
+
+// checkSSECReadKey authenticates a supplied SSE-C read key against the sealed
+// object key when a read has no data from which to build a decryptor.
+func checkSSECReadKey(h http.Header, oi ObjectInfo, opts ObjectOptions) error {
+	if opts.NoDecryption || opts.Transition.RestoreRequest != nil || !crypto.SSEC.IsEncrypted(oi.UserDefined) {
+		return nil
+	}
+	switch {
+	case crypto.SSECopy.IsRequested(h):
+		_, err := crypto.SSECopy.UnsealObjectKey(h, oi.UserDefined, oi.Bucket, oi.Name)
+		return err
+	case crypto.SSEC.IsRequested(h):
+		_, err := crypto.SSEC.UnsealObjectKey(h, oi.UserDefined, oi.Bucket, oi.Name)
+		return err
+	default:
+		return nil
+	}
 }
 
 func newDecryptReader(client io.Reader, key []byte, bucket, object string, seqNumber uint32, metadata map[string]string) (io.Reader, error) {
