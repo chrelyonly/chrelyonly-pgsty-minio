@@ -344,7 +344,10 @@ func (b *BucketMetadata) parseAllConfigs(ctx context.Context, objectAPI ObjectLa
 	}
 
 	if bytes.Equal(b.ObjectLockConfigXML, enabledBucketObjectLockConfig) {
-		b.VersioningConfigXML = enabledBucketVersioningConfig
+		config, versioningErr := versioning.ParseConfig(bytes.NewReader(b.VersioningConfigXML))
+		if versioningErr != nil || !config.Enabled() {
+			b.VersioningConfigXML = enabledBucketVersioningConfig
+		}
 	}
 
 	if len(b.ObjectLockConfigXML) != 0 {
