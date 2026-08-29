@@ -157,7 +157,6 @@ func ChecksumStringToType(alg string) ChecksumType {
 	case "SHA256":
 		return ChecksumSHA256
 	case "CRC64NVME":
-		// AWS seems to ignore full value, and just assume it.
 		return ChecksumCRC64NVME
 	case "":
 		return ChecksumNone
@@ -192,7 +191,9 @@ func NewChecksumType(alg, objType string) ChecksumType {
 		}
 		return ChecksumSHA256
 	case "CRC64NVME":
-		// AWS seems to ignore full value, and just assume it.
+		if objType == xhttp.AmzChecksumTypeComposite {
+			return ChecksumInvalid
+		}
 		return ChecksumCRC64NVME
 	case "":
 		if full != 0 {
@@ -715,7 +716,11 @@ func GetContentChecksum(h http.Header) (*Checksum, error) {
 					return nil, ErrInvalidChecksum
 				}
 				res.Type |= ChecksumFullObject
-			case xhttp.AmzChecksumTypeComposite, "":
+			case xhttp.AmzChecksumTypeComposite:
+				if res.Type.Base().Is(ChecksumCRC64NVME) {
+					return nil, ErrInvalidChecksum
+				}
+			case "":
 			default:
 				return nil, ErrInvalidChecksum
 			}
@@ -780,6 +785,9 @@ func getContentChecksum(h http.Header) (t ChecksumType, s string) {
 	}
 	for _, t := range BaseChecksumTypes {
 		checkType(t)
+	}
+	if t.Base().Is(ChecksumCRC64NVME) && h.Get(xhttp.AmzChecksumType) == xhttp.AmzChecksumTypeComposite {
+		return ChecksumInvalid, ""
 	}
 	return t, s
 }
