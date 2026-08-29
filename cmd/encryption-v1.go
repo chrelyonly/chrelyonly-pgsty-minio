@@ -355,6 +355,29 @@ func rotateKey(ctx context.Context, oldKey []byte, newKeyID string, newKey []byt
 	}
 }
 
+// checkSSECCopySourceKey authenticates the SSE-C copy source key against the
+// sealed object key held in metadata. This keeps the diverted rotation safe on
+// its own and remains defense in depth when the read path also authenticates
+// zero-byte objects. Mirrors the errors rotateKey reports.
+func checkSSECCopySourceKey(h http.Header, metadata map[string]string, bucket, object string, newKey []byte) error {
+	oldKey, err := ParseSSECopyCustomerRequest(h, metadata)
+	if err != nil {
+		return err
+	}
+	sealedKey, err := crypto.SSEC.ParseMetadata(metadata)
+	if err != nil {
+		return err
+	}
+	var objectKey crypto.ObjectKey
+	if err := objectKey.Unseal(oldKey, sealedKey, crypto.SSEC.String(), bucket, object); err != nil {
+		if subtle.ConstantTimeCompare(oldKey, newKey) == 1 {
+			return errInvalidSSEParameters
+		}
+		return crypto.ErrInvalidCustomerKey
+	}
+	return nil
+}
+
 func newEncryptMetadata(ctx context.Context, kind crypto.Type, keyID string, key []byte, bucket, object string, metadata map[string]string, cryptoCtx kms.Context) (crypto.ObjectKey, error) {
 	var sealedKey crypto.SealedKey
 	switch kind {
@@ -549,6 +572,24 @@ func DecryptCopyRequestR(client io.Reader, h http.Header, bucket, object string,
 		}
 	}
 	return newDecryptReader(client, key, bucket, object, seqNumber, metadata)
+}
+
+// checkSSECReadKey authenticates a supplied SSE-C read key against the sealed
+// object key when a read has no data from which to build a decryptor.
+func checkSSECReadKey(h http.Header, oi ObjectInfo, opts ObjectOptions) error {
+	if opts.NoDecryption || opts.Transition.RestoreRequest != nil || !crypto.SSEC.IsEncrypted(oi.UserDefined) {
+		return nil
+	}
+	switch {
+	case crypto.SSECopy.IsRequested(h):
+		_, err := crypto.SSECopy.UnsealObjectKey(h, oi.UserDefined, oi.Bucket, oi.Name)
+		return err
+	case crypto.SSEC.IsRequested(h):
+		_, err := crypto.SSEC.UnsealObjectKey(h, oi.UserDefined, oi.Bucket, oi.Name)
+		return err
+	default:
+		return nil
+	}
 }
 
 func newDecryptReader(client io.Reader, key []byte, bucket, object string, seqNumber uint32, metadata map[string]string) (io.Reader, error) {

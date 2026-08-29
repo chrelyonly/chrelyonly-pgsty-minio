@@ -1328,6 +1328,8 @@ func (z *erasureServerPools) CopyObject(ctx context.Context, srcBucket, srcObjec
 		return objInfo, err
 	}
 
+	// CopyObjectHandler predicts the outcome of this decision in
+	// copyRewritesObjectData(); keep the two in sync.
 	if cpSrcDstSame && srcInfo.metadataOnly {
 		// Version ID is set for the destination and source == destination version ID.
 		if dstOpts.VersionID != "" && srcOpts.VersionID == dstOpts.VersionID {

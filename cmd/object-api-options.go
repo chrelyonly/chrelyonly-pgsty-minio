@@ -439,6 +439,9 @@ func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[strin
 
 // get ObjectOptions for Copy calls with encryption headers provided on the target side and source side metadata
 func copyDstOpts(ctx context.Context, r *http.Request, bucket, object string, metadata map[string]string) (opts ObjectOptions, err error) {
+	if _, err := hash.GetContentChecksum(r.Header); err != nil {
+		return opts, err
+	}
 	return putOptsFromReq(ctx, r, bucket, object, metadata)
 }
 
@@ -469,11 +472,17 @@ func completeMultipartOpts(ctx context.Context, r *http.Request, bucket, object 
 		}
 	}
 
+	opts.wantChecksumType = r.Header.Get(xhttp.AmzChecksumType)
+	switch opts.wantChecksumType {
+	case "", xhttp.AmzChecksumTypeComposite, xhttp.AmzChecksumTypeFullObject:
+	default:
+		return opts, hash.ErrInvalidChecksum
+	}
+
 	opts.WantChecksum, err = hash.GetContentChecksum(r.Header)
 	if err != nil {
 		return opts, err
 	}
-	opts.wantChecksumTypeSet = r.Header.Get(xhttp.AmzChecksumType) != ""
 	opts.MTime = mtime
 	opts.UserDefined = make(map[string]string)
 	// Transfer SSEC key in opts.EncryptFn
