@@ -1488,12 +1488,39 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	// Name the source version explicitly so a metadata-only copy into a
+	// versioned bucket adds a self-referential version instead of rewriting the
+	// object data. A null source version cannot be referenced this way.
+	copySrcOpts := srcOpts
+	if dstOpts.Versioned && copySrcOpts.VersionID == "" {
+		copySrcOpts.VersionID = srcInfo.VersionID
+	}
+
+	// A key rotation rewraps the object key held in metadata; it never
+	// re-encrypts the stored bytes. When the object layer stores new object
+	// data instead, the rotation has to go through the regular re-encrypting
+	// copy, or the destination ends up holding plaintext under metadata that
+	// claims the object is encrypted.
+	canRotateKeyInPlace := !srcInfo.Legacy &&
+		!copyRewritesObjectData(srcInfo.metadataOnly, copySrcOpts, dstOpts)
+
+	// The rotation shortcut authenticates the source key by unsealing it. The
+	// re-encrypting fallback authenticates it only through the source decryptor,
+	// which GetObjectNInfo skips for a zero byte object, so check it here before
+	// the destination is written under the new key.
+	if cpSrcDstSame && sseCopyC && sseC && !chStorageClass && !canRotateKeyInPlace {
+		if err := checkSSECCopySourceKey(r.Header, srcInfo.UserDefined, srcBucket, srcObject, newKey); err != nil {
+			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+	}
+
 	// If src == dst and either
 	// - the object is encrypted using SSE-C and two different SSE-C keys are present
 	// - the object is encrypted using SSE-S3 and the SSE-S3 header is present
 	// - the object storage class is not changing
 	// then execute a key rotation.
-	if cpSrcDstSame && (sseCopyC && sseC) && !chStorageClass {
+	if cpSrcDstSame && (sseCopyC && sseC) && !chStorageClass && canRotateKeyInPlace {
 		oldKey, err = ParseSSECopyCustomerRequest(r.Header, srcInfo.UserDefined)
 		if err != nil {
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
@@ -1736,14 +1763,6 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	// srcInfo.metadataOnly is still cleared below for legacy sources and for
 	// server-side checksum recomputation; both of those rewrite the object data.
 	metadataOnly := srcInfo.metadataOnly && !srcInfo.Legacy && !dstOpts.WantServerSideChecksumType.IsSet()
-
-	// Name the source version explicitly so a metadata-only copy into a
-	// versioned bucket adds a self-referential version instead of rewriting the
-	// object data. A null source version cannot be referenced this way.
-	copySrcOpts := srcOpts
-	if metadataOnly && dstOpts.Versioned && copySrcOpts.VersionID == "" {
-		copySrcOpts.VersionID = srcInfo.VersionID
-	}
 
 	// Compression metadata must describe the bytes that are actually stored.
 	if copyRewritesObjectData(metadataOnly, copySrcOpts, dstOpts) {
