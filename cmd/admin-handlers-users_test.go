@@ -68,6 +68,26 @@ func TestSetUserStatusAdminAction(t *testing.T) {
 	}
 }
 
+func TestSetGroupStatusAdminAction(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   policy.AdminAction
+	}{
+		{name: "enable", status: string(madmin.GroupEnabled), want: policy.EnableGroupAdminAction},
+		{name: "disable", status: string(madmin.GroupDisabled), want: policy.DisableGroupAdminAction},
+		{name: "invalid preserves authenticated default", status: "invalid", want: policy.EnableGroupAdminAction},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := setGroupStatusAdminAction(tt.status); got != tt.want {
+				t.Fatalf("setGroupStatusAdminAction(%q) = %q, want %q", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
 // API suite container for IAM
 type TestSuiteIAM struct {
 	TestSuiteCommon
@@ -224,6 +244,7 @@ func TestIAMInternalIDPServerSuite(t *testing.T) {
 				suite.SetUpSuite(c)
 				suite.TestUserCreate(c)
 				suite.TestUserStatusActionAuthorization(c)
+				suite.TestGroupStatusActionAuthorization(c)
 				suite.TestUserPolicyEscalationBug(c)
 				suite.TestPolicyCreate(c)
 				suite.TestServiceAccountBareARNPolicyRejected(c)
@@ -410,6 +431,106 @@ func (s *TestSuiteIAM) TestUserStatusActionAuthorization(c *check) {
 	}
 	if err := enableClient.SetUserStatus(ctx, targetAccessKey, madmin.AccountDisabled); err == nil || madmin.ToErrorResponse(err).Code != "AccessDenied" {
 		c.Fatalf("EnableUser-only client unexpectedly disabled a user: %v", err)
+	}
+}
+
+func (s *TestSuiteIAM) TestGroupStatusActionAuthorization(c *check) {
+	ctx, cancel := context.WithTimeout(context.Background(), testDefaultTimeout)
+	defer cancel()
+
+	var createdUsers []string
+	var createdPolicies []string
+	group := getRandomBucketName()
+	var groupCreated bool
+	defer func() {
+		if groupCreated {
+			if err := s.adm.UpdateGroupMembers(ctx, madmin.GroupAddRemove{
+				Group:    group,
+				Members:  createdUsers[:1],
+				IsRemove: true,
+			}); err != nil {
+				c.Errorf("unable to remove group member: %v", err)
+			}
+			if err := s.adm.UpdateGroupMembers(ctx, madmin.GroupAddRemove{Group: group, IsRemove: true}); err != nil {
+				c.Errorf("unable to remove test group: %v", err)
+			}
+		}
+		for _, user := range createdUsers {
+			if err := s.adm.RemoveUser(ctx, user); err != nil {
+				c.Errorf("unable to remove test user %s: %v", user, err)
+			}
+		}
+		for _, policyName := range createdPolicies {
+			if err := s.adm.RemoveCannedPolicy(ctx, policyName); err != nil {
+				c.Errorf("unable to remove test policy %s: %v", policyName, err)
+			}
+		}
+	}()
+
+	createUser := func() (string, string) {
+		accessKey, secretKey := mustGenerateCredentials(c)
+		if err := s.adm.SetUser(ctx, accessKey, secretKey, madmin.AccountEnabled); err != nil {
+			c.Fatalf("unable to create test user: %v", err)
+		}
+		createdUsers = append(createdUsers, accessKey)
+		return accessKey, secretKey
+	}
+
+	targetAccessKey, _ := createUser()
+	if err := s.adm.UpdateGroupMembers(ctx, madmin.GroupAddRemove{
+		Group:   group,
+		Members: []string{targetAccessKey},
+	}); err != nil {
+		c.Fatalf("unable to create test group: %v", err)
+	}
+	groupCreated = true
+
+	createStatusClient := func(action policy.AdminAction) *madmin.AdminClient {
+		accessKey, secretKey := createUser()
+		policyName := getRandomBucketName()
+		policyBytes := fmt.Appendf(nil, `{
+ "Version": "2012-10-17",
+ "Statement": [{
+  "Effect": "Allow",
+  "Action": ["%s"]
+ }]
+}`, action)
+		if err := s.adm.AddCannedPolicy(ctx, policyName, policyBytes); err != nil {
+			c.Fatalf("unable to add group status policy: %v", err)
+		}
+		createdPolicies = append(createdPolicies, policyName)
+		if _, err := s.adm.AttachPolicy(ctx, madmin.PolicyAssociationReq{
+			Policies: []string{policyName},
+			User:     accessKey,
+		}); err != nil {
+			c.Fatalf("unable to attach group status policy: %v", err)
+		}
+
+		client, err := madmin.NewWithOptions(s.endpoint, &madmin.Options{
+			Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+			Secure: s.secure,
+		})
+		if err != nil {
+			c.Fatalf("unable to create group status admin client: %v", err)
+		}
+		client.SetCustomTransport(s.TestSuiteCommon.client.Transport)
+		return client
+	}
+
+	disableClient := createStatusClient(policy.DisableGroupAdminAction)
+	if err := disableClient.SetGroupStatus(ctx, group, madmin.GroupDisabled); err != nil {
+		c.Fatalf("DisableGroup-only client could not disable a group: %v", err)
+	}
+	if err := disableClient.SetGroupStatus(ctx, group, madmin.GroupEnabled); err == nil || madmin.ToErrorResponse(err).Code != "AccessDenied" {
+		c.Fatalf("DisableGroup-only client unexpectedly enabled a group: %v", err)
+	}
+
+	enableClient := createStatusClient(policy.EnableGroupAdminAction)
+	if err := enableClient.SetGroupStatus(ctx, group, madmin.GroupEnabled); err != nil {
+		c.Fatalf("EnableGroup-only client could not enable a group: %v", err)
+	}
+	if err := enableClient.SetGroupStatus(ctx, group, madmin.GroupDisabled); err == nil || madmin.ToErrorResponse(err).Code != "AccessDenied" {
+		c.Fatalf("EnableGroup-only client unexpectedly disabled a group: %v", err)
 	}
 }
 
