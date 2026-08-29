@@ -1179,6 +1179,31 @@ func isRemoteCallRequired(ctx context.Context, bucket string, objAPI ObjectLayer
 	return false
 }
 
+// copyRewritesObjectData reports whether the object layer stores new object data
+// for this copy instead of updating metadata in place or adding a
+// self-referential version. It mirrors the metadata-only decision taken by
+// erasureServerPools.CopyObject and erasureSets.CopyObject. CopyObjectHandler
+// has to predict that decision because the compression metadata it records must
+// describe whichever bytes are finally stored. metadataOnly already excludes
+// legacy sources, which the object layer always rewrites.
+func copyRewritesObjectData(metadataOnly bool, srcOpts, dstOpts ObjectOptions) bool {
+	if !metadataOnly {
+		return true
+	}
+	switch {
+	case dstOpts.VersionID != "" && srcOpts.VersionID == dstOpts.VersionID:
+		// In-place update of the addressed version.
+		return false
+	case !dstOpts.Versioned && srcOpts.VersionID == "":
+		// In-place update of an unversioned object.
+		return false
+	case dstOpts.Versioned && srcOpts.VersionID != dstOpts.VersionID:
+		// A new version referencing the existing data.
+		return false
+	}
+	return true
+}
+
 // CopyObjectHandler - Copy Object
 // ----------
 // This implementation of the PUT operation adds an object to a bucket
@@ -1463,12 +1488,39 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	// Name the source version explicitly so a metadata-only copy into a
+	// versioned bucket adds a self-referential version instead of rewriting the
+	// object data. A null source version cannot be referenced this way.
+	copySrcOpts := srcOpts
+	if dstOpts.Versioned && copySrcOpts.VersionID == "" {
+		copySrcOpts.VersionID = srcInfo.VersionID
+	}
+
+	// A key rotation rewraps the object key held in metadata; it never
+	// re-encrypts the stored bytes. When the object layer stores new object
+	// data instead, the rotation has to go through the regular re-encrypting
+	// copy, or the destination ends up holding plaintext under metadata that
+	// claims the object is encrypted.
+	canRotateKeyInPlace := !srcInfo.Legacy &&
+		!copyRewritesObjectData(srcInfo.metadataOnly, copySrcOpts, dstOpts)
+
+	// The rotation shortcut authenticates the source key by unsealing it. The
+	// re-encrypting fallback authenticates it only through the source decryptor,
+	// which GetObjectNInfo skips for a zero byte object, so check it here before
+	// the destination is written under the new key.
+	if cpSrcDstSame && sseCopyC && sseC && !chStorageClass && !canRotateKeyInPlace {
+		if err := checkSSECCopySourceKey(r.Header, srcInfo.UserDefined, srcBucket, srcObject, newKey); err != nil {
+			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+	}
+
 	// If src == dst and either
 	// - the object is encrypted using SSE-C and two different SSE-C keys are present
 	// - the object is encrypted using SSE-S3 and the SSE-S3 header is present
 	// - the object storage class is not changing
 	// then execute a key rotation.
-	if cpSrcDstSame && (sseCopyC && sseC) && !chStorageClass {
+	if cpSrcDstSame && (sseCopyC && sseC) && !chStorageClass && canRotateKeyInPlace {
 		oldKey, err = ParseSSECopyCustomerRequest(r.Header, srcInfo.UserDefined)
 		if err != nil {
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
@@ -1708,8 +1760,12 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		srcInfo.UserDefined[ReservedMetadataPrefixLower+ReplicationStatus] = dsc.PendingStatus()
 		srcInfo.UserDefined[ReservedMetadataPrefixLower+ReplicationTimestamp] = UTCNow().Format(time.RFC3339Nano)
 	}
-	// Compression metadata must describe data that is actually rewritten.
-	if !srcInfo.metadataOnly || srcInfo.Legacy || dstOpts.WantServerSideChecksumType.IsSet() {
+	// srcInfo.metadataOnly is still cleared below for legacy sources and for
+	// server-side checksum recomputation; both of those rewrite the object data.
+	metadataOnly := srcInfo.metadataOnly && !srcInfo.Legacy && !dstOpts.WantServerSideChecksumType.IsSet()
+
+	// Compression metadata must describe the bytes that are actually stored.
+	if copyRewritesObjectData(metadataOnly, copySrcOpts, dstOpts) {
 		if isDstCompressed {
 			maps.Copy(srcInfo.UserDefined, compressMetadata)
 		} else {
@@ -1807,11 +1863,6 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		}
 
 		copyObjectFn := objectAPI.CopyObject
-
-		copySrcOpts := srcOpts
-		if srcInfo.metadataOnly && dstOpts.Versioned && copySrcOpts.VersionID == "" {
-			copySrcOpts.VersionID = srcInfo.VersionID
-		}
 
 		// Copy source object to destination, if source and destination
 		// object is same then only metadata is updated.

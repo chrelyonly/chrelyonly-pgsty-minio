@@ -355,6 +355,29 @@ func rotateKey(ctx context.Context, oldKey []byte, newKeyID string, newKey []byt
 	}
 }
 
+// checkSSECCopySourceKey authenticates the SSE-C copy source key against the
+// sealed object key held in metadata. GetObjectNInfo builds no decryptor for a
+// zero byte object, so a copy whose data path never decrypts anything has to
+// verify the source key explicitly. Mirrors the errors rotateKey reports.
+func checkSSECCopySourceKey(h http.Header, metadata map[string]string, bucket, object string, newKey []byte) error {
+	oldKey, err := ParseSSECopyCustomerRequest(h, metadata)
+	if err != nil {
+		return err
+	}
+	sealedKey, err := crypto.SSEC.ParseMetadata(metadata)
+	if err != nil {
+		return err
+	}
+	var objectKey crypto.ObjectKey
+	if err := objectKey.Unseal(oldKey, sealedKey, crypto.SSEC.String(), bucket, object); err != nil {
+		if subtle.ConstantTimeCompare(oldKey, newKey) == 1 {
+			return errInvalidSSEParameters
+		}
+		return crypto.ErrInvalidCustomerKey
+	}
+	return nil
+}
+
 func newEncryptMetadata(ctx context.Context, kind crypto.Type, keyID string, key []byte, bucket, object string, metadata map[string]string, cryptoCtx kms.Context) (crypto.ObjectKey, error) {
 	var sealedKey crypto.SealedKey
 	switch kind {
