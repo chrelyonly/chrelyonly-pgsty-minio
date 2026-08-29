@@ -308,7 +308,7 @@ func testBucketCorsSkipsMetadataLookupWithoutOrigin(obj ObjectLayer, _ string, _
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	rec := httptest.NewRecorder()
-	wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/login", nil))
+	wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, getGetObjectURL("", "api", "v1/login"), nil))
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
