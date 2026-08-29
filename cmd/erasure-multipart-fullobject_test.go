@@ -450,19 +450,21 @@ func testAPICompleteMultipartChecksumTypeMismatch(obj ObjectLayer, instanceType,
 		}
 	})
 
-	t.Run("crc64nvme-composite-remains-canonicalized", func(t *testing.T) {
+	t.Run("crc64nvme-composite-is-rejected", func(t *testing.T) {
 		crc64Type := hash.ChecksumCRC64NVME
 		objectName := "type-mismatch/crc64nvme-composite"
-		uploadID := newMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName,
-			crc64Type.String(), xhttp.AmzChecksumTypeComposite)
-		etags := uploadPartsHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, crc64Type, partData)
-		rec := completeMultipartUploadHTTP(t, apiRouter, credentials, bucketName, objectName, uploadID, etags, nil,
-			map[string]string{
-				crc64Type.Key():       mustChecksum(t, crc64Type, full),
+		req, err := newTestSignedRequestV4(http.MethodPost, getNewMultipartURL("", bucketName, objectName),
+			0, nil, credentials.AccessKey, credentials.SecretKey, map[string]string{
+				xhttp.AmzChecksumAlgo: crc64Type.String(),
 				xhttp.AmzChecksumType: xhttp.AmzChecksumTypeComposite,
 			})
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: CRC64NVME canonicalization changed: %d %s", instanceType, rec.Code, rec.Body.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || apiErrorCode(t, rec) != "InvalidArgument" {
+			t.Fatalf("%s: CRC64NVME/COMPOSITE returned %d %s", instanceType, rec.Code, rec.Body.String())
 		}
 	})
 }

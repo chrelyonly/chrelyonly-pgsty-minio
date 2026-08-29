@@ -67,6 +67,9 @@ func TestGetContentChecksumRejectsUnsupportedHeaders(t *testing.T) {
 
 // TestChecksumAddToHeader tests that adding and retrieving a checksum on a header works
 func TestChecksumAddToHeader(t *testing.T) {
+	if got := NewChecksumType("CRC64NVME", xhttp.AmzChecksumTypeComposite); !got.Is(ChecksumInvalid) {
+		t.Fatalf("CRC64NVME/COMPOSITE = %s, want invalid", got.StringFull())
+	}
 	tests := []struct {
 		name     string
 		checksum ChecksumType
