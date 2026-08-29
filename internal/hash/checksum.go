@@ -657,22 +657,55 @@ func AddChecksumHeader(w http.ResponseWriter, c map[string]string) {
 	}
 }
 
+func isSupportedChecksumHeader(name string) bool {
+	switch {
+	case strings.EqualFold(name, xhttp.AmzChecksumAlgo),
+		strings.EqualFold(name, xhttp.AmzChecksumType),
+		strings.EqualFold(name, xhttp.AmzChecksumMode):
+		return true
+	}
+	for _, checksumType := range BaseChecksumTypes {
+		if strings.EqualFold(name, checksumType.Key()) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnsupportedChecksumHeader(h http.Header) bool {
+	for name := range h {
+		if strings.HasPrefix(strings.ToLower(name), "x-amz-checksum-") && !isSupportedChecksumHeader(name) {
+			return true
+		}
+	}
+	return false
+}
+
 // GetContentChecksum returns content checksum.
 // Returns ErrInvalidChecksum if so.
 // Returns nil, nil if no checksum.
 func GetContentChecksum(h http.Header) (*Checksum, error) {
+	if hasUnsupportedChecksumHeader(h) {
+		return nil, ErrInvalidChecksum
+	}
 	if trailing := h.Values(xhttp.AmzTrailer); len(trailing) > 0 {
 		var res *Checksum
-		for _, header := range trailing {
-			var duplicates bool
-			for _, t := range BaseChecksumTypes {
-				if strings.EqualFold(t.Key(), header) {
-					duplicates = res != nil
-					res = NewChecksumWithType(t|ChecksumTrailing, "")
+		for _, headers := range trailing {
+			for header := range strings.SplitSeq(headers, ",") {
+				header = strings.TrimSpace(header)
+				var duplicates bool
+				for _, t := range BaseChecksumTypes {
+					if strings.EqualFold(t.Key(), header) {
+						duplicates = res != nil
+						res = NewChecksumWithType(t|ChecksumTrailing, "")
+					}
 				}
-			}
-			if duplicates {
-				return nil, ErrInvalidChecksum
+				if strings.HasPrefix(strings.ToLower(header), "x-amz-checksum-") && !isSupportedChecksumHeader(header) {
+					return nil, ErrInvalidChecksum
+				}
+				if duplicates {
+					return nil, ErrInvalidChecksum
+				}
 			}
 		}
 		if res != nil {

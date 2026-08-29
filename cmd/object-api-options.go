@@ -439,6 +439,9 @@ func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[strin
 
 // get ObjectOptions for Copy calls with encryption headers provided on the target side and source side metadata
 func copyDstOpts(ctx context.Context, r *http.Request, bucket, object string, metadata map[string]string) (opts ObjectOptions, err error) {
+	if _, err := hash.GetContentChecksum(r.Header); err != nil {
+		return opts, err
+	}
 	return putOptsFromReq(ctx, r, bucket, object, metadata)
 }
 
