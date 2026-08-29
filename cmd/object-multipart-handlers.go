@@ -309,6 +309,10 @@ func (api objectAPIHandlers) NewMultipartUploadHandler(w http.ResponseWriter, r 
 		}
 	}
 
+	if _, err := hash.GetContentChecksum(r.Header); err != nil {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidChecksum), r.URL)
+		return
+	}
 	checksumType := hash.NewChecksumHeader(r.Header)
 	if checksumType.Is(hash.ChecksumInvalid) {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidChecksum), r.URL)
