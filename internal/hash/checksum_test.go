@@ -18,14 +18,58 @@
 package hash
 
 import (
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	xhttp "github.com/minio/minio/internal/http"
 )
 
+func TestGetContentChecksumRejectsUnsupportedHeaders(t *testing.T) {
+	unsupported := []string{
+		"x-amz-checksum-md5",
+		"x-amz-checksum-sha512",
+		"x-amz-checksum-xxhash64",
+		"x-amz-checksum-xxhash3",
+		"x-amz-checksum-xxhash128",
+		"x-amz-checksum-future",
+	}
+	for _, header := range unsupported {
+		t.Run("header/"+header, func(t *testing.T) {
+			h := http.Header{header: {"AA=="}}
+			if _, err := GetContentChecksum(h); !errors.Is(err, ErrInvalidChecksum) {
+				t.Fatalf("GetContentChecksum(%s) error = %v, want ErrInvalidChecksum", header, err)
+			}
+		})
+		t.Run("trailer/"+header, func(t *testing.T) {
+			h := http.Header{xhttp.AmzTrailer: {header}}
+			if _, err := GetContentChecksum(h); !errors.Is(err, ErrInvalidChecksum) {
+				t.Fatalf("GetContentChecksum(trailer %s) error = %v, want ErrInvalidChecksum", header, err)
+			}
+		})
+	}
+
+	for header, value := range map[string]string{
+		xhttp.AmzChecksumAlgo:          "CRC32",
+		xhttp.AmzChecksumType:          xhttp.AmzChecksumTypeComposite,
+		xhttp.AmzChecksumMode:          "ENABLED",
+		"x-amz-sdk-checksum-algorithm": "SHA512",
+	} {
+		t.Run("control/"+header, func(t *testing.T) {
+			h := http.Header{header: {value}}
+			if _, err := GetContentChecksum(h); errors.Is(err, ErrInvalidChecksum) {
+				t.Fatalf("control header %s was rejected", header)
+			}
+		})
+	}
+}
+
 // TestChecksumAddToHeader tests that adding and retrieving a checksum on a header works
 func TestChecksumAddToHeader(t *testing.T) {
+	if got := NewChecksumType("CRC64NVME", xhttp.AmzChecksumTypeComposite); !got.Is(ChecksumInvalid) {
+		t.Fatalf("CRC64NVME/COMPOSITE = %s, want invalid", got.StringFull())
+	}
 	tests := []struct {
 		name     string
 		checksum ChecksumType
@@ -103,6 +147,16 @@ func TestChecksumAddToHeader(t *testing.T) {
 				t.Errorf("Type mismatch for %s: expected %s, got %s", tt.name, expectedType.StringFull(), gotChksm.Type.StringFull())
 			}
 		})
+	}
+}
+
+func TestCRC64NVMECompositeTrailerIsInvalid(t *testing.T) {
+	h := http.Header{}
+	h.Set(xhttp.AmzTrailer, ChecksumCRC64NVME.Key())
+	h.Set(xhttp.AmzChecksumType, xhttp.AmzChecksumTypeComposite)
+	_, err := GetContentChecksum(h)
+	if !errors.Is(err, ErrInvalidChecksum) {
+		t.Fatalf("CRC64NVME/COMPOSITE trailer error = %v, want ErrInvalidChecksum", err)
 	}
 }
 

@@ -1173,9 +1173,9 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 	var checksumType hash.ChecksumType
 	if cs := fi.Metadata[hash.MinIOMultipartChecksum]; cs != "" {
 		checksumType = hash.NewChecksumType(cs, fi.Metadata[hash.MinIOMultipartChecksumType])
+		expectedType := checksumType | hash.ChecksumMultipart | hash.ChecksumIncludesMultipart
 		if opts.WantChecksum != nil {
 			providedType := opts.WantChecksum.Type | hash.ChecksumMultipart | hash.ChecksumIncludesMultipart
-			expectedType := checksumType | hash.ChecksumMultipart | hash.ChecksumIncludesMultipart
 			if providedType.Base() != expectedType.Base() {
 				return oi, InvalidArgument{
 					Bucket: bucket,
@@ -1183,8 +1183,10 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 					Err:    fmt.Errorf("checksum algorithm mismatch. got %q expected %q", providedType.String(), expectedType.String()),
 				}
 			}
-			if opts.wantChecksumTypeSet && providedType.ObjType() != expectedType.ObjType() {
-				return oi, completeMultipartChecksumTypeMismatch(providedType.ObjType(), expectedType.ObjType())
+		}
+		if opts.wantChecksumType != "" {
+			if opts.wantChecksumType != expectedType.ObjType() {
+				return oi, completeMultipartChecksumTypeMismatch(opts.wantChecksumType, expectedType.ObjType())
 			}
 		}
 		checksumType |= hash.ChecksumMultipart | hash.ChecksumIncludesMultipart

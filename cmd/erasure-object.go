@@ -266,9 +266,19 @@ func (er erasureObjects) GetObjectNInfo(ctx context.Context, bucket, object stri
 				ObjInfo: objInfo,
 			}, err
 		}
-
 		// Zero byte objects don't even need to further initialize pipes etc.
-		return NewGetObjectReaderFromReader(bytes.NewReader(nil), objInfo, opts)
+		gr, err = NewGetObjectReaderFromReader(bytes.NewReader(nil), objInfo, opts)
+		if err != nil {
+			return gr, err
+		}
+		// With no data, the reader above cannot authenticate an SSE-C key the
+		// way NewGetObjectReader does. Check it after the preconditions so zero
+		// and non-zero reads preserve the same error ordering.
+		if err := checkSSECReadKey(h, objInfo, opts); err != nil {
+			gr.Close()
+			return nil, err
+		}
+		return gr, nil
 	}
 
 	if objInfo.IsRemote() {

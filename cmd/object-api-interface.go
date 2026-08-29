@@ -84,8 +84,8 @@ type ObjectOptions struct {
 	Expiration          ExpirationOptions
 	LifecycleAuditEvent lcAuditEvent
 
-	WantChecksum        *hash.Checksum // x-amz-checksum-XXX checksum sent to PutObject/ CompleteMultipartUpload.
-	wantChecksumTypeSet bool           // x-amz-checksum-type was explicitly set on CompleteMultipartUpload.
+	WantChecksum     *hash.Checksum // x-amz-checksum-XXX checksum sent to PutObject/ CompleteMultipartUpload.
+	wantChecksumType string         // explicit x-amz-checksum-type value on CompleteMultipartUpload.
 
 	WantServerSideChecksumType hash.ChecksumType // if set, we compute a server-side checksum of this type
 
