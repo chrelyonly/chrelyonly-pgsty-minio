@@ -69,3 +69,5 @@ _bmad-output/
 docs/security/
 docs/rebranding.md
 .release-sign/
+data
+build
