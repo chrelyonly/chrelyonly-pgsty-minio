@@ -255,9 +255,11 @@ func (a adminAPIHandlers) SRPeerReplicateBucketItem(w http.ResponseWriter, r *ht
 	case madmin.SRBucketMetaTypeTags:
 		err = globalSiteReplicationSys.PeerBucketTaggingHandler(ctx, item.Bucket, item.Tags, item.UpdatedAt)
 	case madmin.SRBucketMetaTypeObjectLockConfig:
-		err = globalSiteReplicationSys.PeerBucketObjectLockConfigHandler(ctx, item.Bucket, item.ObjectLockConfig, item.UpdatedAt)
+		err = globalSiteReplicationSys.peerBucketObjectLockConfigItem(ctx, item)
 	case madmin.SRBucketMetaTypeSSEConfig:
 		err = globalSiteReplicationSys.PeerBucketSSEConfigHandler(ctx, item.Bucket, item.SSEConfig, item.UpdatedAt)
+	case madmin.SRBucketMetaTypeCorsConfig:
+		err = globalSiteReplicationSys.PeerBucketCorsConfigHandler(ctx, item.Bucket, item.Cors, item.UpdatedAt)
 	case madmin.SRBucketMetaLCConfig:
 		err = globalSiteReplicationSys.PeerBucketLCConfigHandler(ctx, item.Bucket, item.ExpiryLCConfig, item.UpdatedAt)
 	}

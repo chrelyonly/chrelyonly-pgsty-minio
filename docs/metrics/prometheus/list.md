@@ -1,15 +1,15 @@
 # Cluster Metrics
 
-MinIO collects the following metrics at the cluster level.
+Silo collects the following metrics at the cluster level.
 Metrics may include one or more labels, such as the server that calculated that metric.
 
-These metrics can be obtained from any MinIO server once per collection by using the following URL:
+These metrics can be obtained from any Silo server once per collection by using the following URL:
 
 ```shell
 https://HOSTNAME:PORT/minio/v2/metrics/cluster
 ```
 
-Replace ``HOSTNAME:PORT`` with the hostname of your MinIO deployment.
+Replace ``HOSTNAME:PORT`` with the hostname of your Silo deployment.
 For deployments behind a load balancer, use the load balancer hostname instead of a single node hostname.
 
 ## Audit Metrics
@@ -66,8 +66,8 @@ For deployments behind a load balancer, use the load balancer hostname instead o
 
 | Name                                              | Description                                    |
 |:--------------------------------------------------|:-----------------------------------------------|
-| `minio_cluster_nodes_offline_total`               | Total number of MinIO nodes offline.           |
-| `minio_cluster_nodes_online_total`                | Total number of MinIO nodes online.            |
+| `minio_cluster_nodes_offline_total`               | Total number of Silo nodes offline.           |
+| `minio_cluster_nodes_online_total`                | Total number of Silo nodes online.            |
 | `minio_cluster_write_quorum`                      | Maximum write quorum across all pools and sets |
 | `minio_cluster_health_status`                     | Get current cluster health status              |
 | `minio_cluster_health_erasure_set_healing_drives` | Count of healing drives in the erasure set     |
@@ -78,8 +78,8 @@ For deployments behind a load balancer, use the load balancer hostname instead o
 
 ## Cluster Replication Metrics
 
-Metrics marked as ``Site Replication Only`` only populate on deployments with [Site Replication](https://silo.pigsty.io/operations/install-deploy-manage/multi-site-replication.html) configurations.
-For deployments with [bucket](https://silo.pigsty.io/administration/bucket-replication.html) or [batch](https://silo.pigsty.io/administration/batch-framework.html#replicate) configurations, these metrics populate instead under the [Bucket Metrics](#bucket-metrics) endpoint.
+Metrics marked as ``Site Replication Only`` only populate on deployments with [Site Replication](https://silo.pgsty.com/operations/replication/multi-site-replication/) configurations.
+For deployments with [bucket](https://silo.pgsty.com/administration/bucket-replication/) or [batch](https://silo.pgsty.com/administration/batch-framework-job-replicate/#minio-batch-framework-replicate-job) configurations, these metrics populate instead under the [Bucket Metrics](#bucket-metrics) endpoint.
 
 | Name                                                       | Description                                                                                             
 |:-----------------------------------------------------------|:---------------------------------------------------------------------------------------------------------|
@@ -108,8 +108,8 @@ For deployments with [bucket](https://silo.pigsty.io/administration/bucket-repli
 
 ## Node Replication Metrics
 
-Metrics marked as ``Site Replication Only`` only populate on deployments with [Site Replication](https://silo.pigsty.io/operations/install-deploy-manage/multi-site-replication.html) configurations.
-For deployments with [bucket](https://silo.pigsty.io/administration/bucket-replication.html) or [batch](https://silo.pigsty.io/administration/batch-framework.html#replicate) configurations, these metrics populate instead under the [Bucket Metrics](#bucket-metrics) endpoint.
+Metrics marked as ``Site Replication Only`` only populate on deployments with [Site Replication](https://silo.pgsty.com/operations/replication/multi-site-replication/) configurations.
+For deployments with [bucket](https://silo.pgsty.com/administration/bucket-replication/) or [batch](https://silo.pgsty.com/administration/batch-framework-job-replicate/#minio-batch-framework-replicate-job) configurations, these metrics populate instead under the [Bucket Metrics](#bucket-metrics) endpoint.
 
 | Name                                                       | Description
 |:-----------------------------------------------------------|:---------------------------------------------------------------------------------------------------------|
@@ -188,8 +188,8 @@ For deployments with [bucket](https://silo.pigsty.io/administration/bucket-repli
 
 | Name                          | Description                            |
 |:------------------------------|:---------------------------------------|
-| `minio_software_commit_info`  | Git commit hash for the MinIO release. |
-| `minio_software_version_info` | MinIO Release tag for the server.      |
+| `minio_software_commit_info`  | Git commit hash for the Silo release. |
+| `minio_software_version_info` | Silo Release tag for the server.      |
 
 ## Drive Metrics
 
@@ -246,8 +246,8 @@ For deployments with [bucket](https://silo.pigsty.io/administration/bucket-repli
 
 | Name                                       | Description                                                                                                     |
 |:-------------------------------------------|:----------------------------------------------------------------------------------------------------------------|
-| `minio_node_file_descriptor_limit_total`   | Limit on total number of open file descriptors for the MinIO Server process.                                    |
-| `minio_node_file_descriptor_open_total`    | Total number of open file descriptors by the MinIO Server process.                                              |
+| `minio_node_file_descriptor_limit_total`   | Limit on total number of open file descriptors for the Silo Server process.                                    |
+| `minio_node_file_descriptor_open_total`    | Total number of open file descriptors by the Silo Server process.                                              |
 | `minio_node_go_routine_total`              | Total number of go routines running.                                                                            |
 | `minio_node_io_rchar_bytes`                | Total bytes read by the process from the underlying storage system including cache, /proc/[pid]/io rchar.       |
 | `minio_node_io_read_bytes`                 | Total bytes read by the process from the underlying storage system, /proc/[pid]/io read_bytes.                  |
@@ -256,8 +256,8 @@ For deployments with [bucket](https://silo.pigsty.io/administration/bucket-repli
 | `minio_node_process_cpu_total_seconds`     | Total user and system CPU time spent in seconds by the process.                                                |
 | `minio_node_process_resident_memory_bytes` | Resident memory size in bytes.                                                                                  |
 | `minio_node_process_virtual_memory_bytes`  | Virtual memory size in bytes.                                                                                   |
-| `minio_node_process_starttime_seconds`     | Start time for MinIO process per node, time in seconds since Unix epoc.                                         |
-| `minio_node_process_uptime_seconds`        | Uptime for MinIO process per node in seconds.                                                                   |
+| `minio_node_process_starttime_seconds`     | Start time for Silo process per node, time in seconds since Unix epoc.                                         |
+| `minio_node_process_uptime_seconds`        | Uptime for Silo process per node in seconds.                                                                   |
 
 ## Scanner Metrics
 
@@ -274,17 +274,17 @@ For deployments with [bucket](https://silo.pigsty.io/administration/bucket-repli
 
 # Bucket Metrics
 
-MinIO collects the following metrics at the bucket level.
+Silo collects the following metrics at the bucket level.
 Each metric includes the ``bucket`` label to identify the corresponding bucket.
 Metrics may include one or more additional labels, such as the server that calculated that metric.
 
-These metrics can be obtained from any MinIO server once per collection by using the following URL:
+These metrics can be obtained from any Silo server once per collection by using the following URL:
 
 ```shell
 https://HOSTNAME:PORT/minio/v2/metrics/bucket
 ```
 
-Replace ``HOSTNAME:PORT`` with the hostname of your MinIO deployment.
+Replace ``HOSTNAME:PORT`` with the hostname of your Silo deployment.
 For deployments behind a load balancer, use the load balancer hostname instead of a single node hostname.
 
 ## Distribution Metrics
@@ -296,8 +296,8 @@ For deployments behind a load balancer, use the load balancer hostname instead o
 
 ## Replication Metrics
 
-These metrics only populate on deployments with [Bucket Replication](https://silo.pigsty.io/administration/bucket-replication.html) or [Batch Replication](https://silo.pigsty.io/administration/batch-framework.html) configurations.
-For deployments with [Site Replication](https://silo.pigsty.io/operations/install-deploy-manage/multi-site-replication.html) configured, select metrics populate under the [Cluster Metrics](#cluster-metrics) endpoint.
+These metrics only populate on deployments with [Bucket Replication](https://silo.pgsty.com/administration/bucket-replication/) or [Batch Replication](https://silo.pgsty.com/administration/batch-framework/) configurations.
+For deployments with [Site Replication](https://silo.pgsty.com/operations/replication/multi-site-replication/) configured, select metrics populate under the [Cluster Metrics](#cluster-metrics) endpoint.
 
 | Name                                                | Description                                                                      |
 |:----------------------------------------------------|:---------------------------------------------------------------------------------|
@@ -354,17 +354,17 @@ For deployments with [Site Replication](https://silo.pigsty.io/operations/instal
 
 # Resource Metrics
 
-MinIO collects the following resource metrics at the node level.
+Silo collects the following resource metrics at the node level.
 Each metric includes the `server` label to identify the corresponding node.
 Metrics may include one or more additional labels, such as the drive path, interface name, etc.
 
-These metrics can be obtained from any MinIO server once per collection by using the following URL:
+These metrics can be obtained from any Silo server once per collection by using the following URL:
 
 ```shell
 https://HOSTNAME:PORT/minio/v2/metrics/resource
 ```
 
-Replace `HOSTNAME:PORT` with the hostname of your MinIO deployment.
+Replace `HOSTNAME:PORT` with the hostname of your Silo deployment.
 For deployments behind a load balancer, use the load balancer hostname instead of a single node hostname.
 
 ## Drive Resource Metrics

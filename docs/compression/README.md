@@ -1,8 +1,8 @@
-# Compression Guide [![Slack](https://slack.min.io/slack?type=svg)](https://slack.min.io)
+# Compression Guide
 
-MinIO server allows streaming compression to ensure efficient disk space usage.
+Silo server allows streaming compression to ensure efficient disk space usage.
 Compression happens inflight, i.e objects are compressed before being written to disk(s).
-MinIO uses [`klauspost/compress/s2`](https://github.com/klauspost/compress/tree/master/s2)
+Silo uses [`klauspost/compress/s2`](https://github.com/klauspost/compress/tree/master/s2)
 streaming compression due to its stability and performance.
 
 This algorithm is specifically optimized for machine generated content.
@@ -19,35 +19,35 @@ will increase speed when the content can be compressed.
 
 ### 1. Prerequisites
 
-Install MinIO - [MinIO Quickstart Guide](https://silo.pigsty.io/operations/deployments/baremetal-deploy-minio-on-redhat-linux.html).
+Install Silo - [Silo Quickstart Guide](https://silo.pgsty.com/operations/deployments/baremetal-deploy-minio-on-redhat-linux/).
 
-### 2. Run MinIO with compression
+### 2. Run Silo with compression
 
-Compression can be enabled by updating the `compress` config settings for MinIO server config.
+Compression can be enabled by updating the `compress` config settings for Silo server config.
 Config `compress` settings take extensions and mime-types to be compressed.
 
 ```bash
-~ mc admin config get myminio compression
+~ mc admin config get mysilo compression
 compression extensions=".txt,.log,.csv,.json,.tar,.xml,.bin" mime_types="text/*,application/json,application/xml"
 ```
 
 Default config includes most common highly compressible content extensions and mime-types.
 
 ```bash
-~ mc admin config set myminio compression extensions=".pdf" mime_types="application/pdf"
+~ mc admin config set mysilo compression extensions=".pdf" mime_types="application/pdf"
 ```
 
 To show help on setting compression config values.
 
 ```bash
-~ mc admin config set myminio compression
+~ mc admin config set mysilo compression
 ```
 
 To enable compression for all content, no matter the extension and content type
 (except for the default excluded types) set BOTH extensions and mime types to empty.
 
 ```bash
-~ mc admin config set myminio compression enable="on" extensions="" mime_types=""
+~ mc admin config set mysilo compression enable="on" extensions="" mime_types=""
 ```
 
 The compression settings may also be set through environment variables.
@@ -75,13 +75,13 @@ See [CRIME TLS](https://en.wikipedia.org/wiki/CRIME) as an example of this.
 
 Therefore, compression is disabled when encrypting by default, and must be enabled separately.
 
-Consult our security experts on [SUBNET](https://min.io/pricing) to help you evaluate if
-your setup can use this feature combination safely.
+Evaluate the security and resource impact in a staging environment before
+deciding whether this feature combination is safe for your setup.
 
 To enable compression+encryption use:
 
 ```bash
-~ mc admin config set myminio compression allow_encryption=on
+~ mc admin config set mysilo compression allow_encryption=on
 ```
 
 Or alternatively through the environment variable `MINIO_COMPRESSION_ALLOW_ENCRYPTION=on`.
@@ -131,7 +131,7 @@ the data directory to view the size of the object.
 
 ## Explore Further
 
-- [Use `mc` with MinIO Server](https://silo.pigsty.io/reference/minio-mc.html)
-- [Use `aws-cli` with MinIO Server](https://silo.pigsty.io/integrations/aws-cli-with-minio.html)
-- [Use `minio-go` SDK with MinIO Server](https://silo.pigsty.io/developers/go/minio-go.html)
-- [The MinIO documentation website](https://silo.pigsty.io/index.html)
+- [Use `mc` with Silo Server](https://silo.pgsty.com/reference/minio-mc/)
+- [Use `aws-cli` with Silo Server](https://silo.pgsty.com/integrations/aws-cli-with-minio/)
+- [Use `minio-go` SDK with Silo Server](https://silo.pgsty.com/developers/go/minio-go/)
+- [The Silo documentation website](https://silo.pgsty.com/docs/)

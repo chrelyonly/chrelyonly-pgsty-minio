@@ -1,6 +1,6 @@
 # Automatic Site Replication
 
-This feature allows multiple independent MinIO sites (or clusters) that are using the same external IDentity Provider (IDP) to be configured as replicas. In this situation the set of replica sites are referred to as peer sites or just sites. When site-replication is enabled on a set of sites, the following changes are replicated to all other sites:
+This feature allows multiple independent Silo sites (or clusters) that are using the same external IDentity Provider (IDP) to be configured as replicas. In this situation the set of replica sites are referred to as peer sites or just sites. When site-replication is enabled on a set of sites, the following changes are replicated to all other sites:
 
 - Creation and deletion of buckets and objects
 - Creation and deletion of all IAM users, groups, policies and their mappings to users or groups
@@ -25,36 +25,36 @@ The following Bucket features will **not be replicated**, is designed to differ 
 
 - **Removing a site** is not allowed from a set of replicated sites once configured.
 - All sites must be using the **same** external IDP(s) if any.
-- For [SSE-S3 or SSE-KMS encryption via KMS](https://silo.pigsty.io/operations/server-side-encryption.html "MinIO KMS Guide"), all sites **must**  have access to a central KMS deployment. This can be achieved via a central KES server or multiple KES servers (say one per site) connected via a central KMS (Vault) server.
+- For [SSE-S3 or SSE-KMS encryption via KMS](https://silo.pgsty.com/operations/server-side-encryption/ "Silo KMS Guide"), all sites **must**  have access to a central KMS deployment. This can be achieved via a central KES server or multiple KES servers (say one per site) connected via a central KMS (Vault) server.
 
 ## Configuring Site Replication
 
-- Configure an alias in `mc` for each of the sites. For example if you have three MinIO sites, you may run:
+- Configure an alias in `mc` for each of the sites. For example if you have three Silo sites, you may run:
 
 ```sh
-mc alias set minio1 https://minio1.example.com:9000 adminuser adminpassword
-mc alias set minio2 https://minio2.example.com:9000 adminuser adminpassword
-mc alias set minio3 https://minio3.example.com:9000 adminuser adminpassword
+mc alias set silo1 https://silo1.example.com:9000 adminuser adminpassword
+mc alias set silo2 https://silo2.example.com:9000 adminuser adminpassword
+mc alias set silo3 https://silo3.example.com:9000 adminuser adminpassword
 ```
 
 or
 
 ```sh
-export MC_HOST_minio1=https://adminuser:adminpassword@minio1.example.com
-export MC_HOST_minio2=https://adminuser:adminpassword@minio2.example.com
-export MC_HOST_minio3=https://adminuser:adminpassword@minio3.example.com
+export MC_HOST_silo1=https://adminuser:adminpassword@silo1.example.com
+export MC_HOST_silo2=https://adminuser:adminpassword@silo2.example.com
+export MC_HOST_silo3=https://adminuser:adminpassword@silo3.example.com
 ```
 
 - Add site replication configuration with:
 
 ```sh
-mc admin replicate add minio1 minio2 minio3
+mc admin replicate add silo1 silo2 silo3
 ```
 
 - Once the above command returns success, you may query site replication configuration with:
 
 ```sh
-mc admin replicate info minio1
+mc admin replicate info silo1
 ```
 
 ** Note **

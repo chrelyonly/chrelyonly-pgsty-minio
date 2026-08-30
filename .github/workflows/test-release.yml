@@ -1,0 +1,508 @@
+name: Test Release Pipeline
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/goreleaser.yml"
+      - ".github/nfpm.yml"
+      - "Dockerfile.goreleaser"
+      - "Dockerfile.distroless"
+      - "cmd/healthcheck-main.go"
+      - "cmd/main.go"
+      - "dockerscripts/download-static-curl.sh"
+      - "dockerscripts/docker-entrypoint.sh"
+      - "dockerscripts/docker-entrypoint_test.sh"
+      - "silo.service"
+      - "silo.env"
+      - "silo.sysusers"
+      - "buildscripts/package-release.sh"
+      - "buildscripts/package/postinstall.sh"
+      - "buildscripts/package/preremove.sh"
+      - "buildscripts/package/lifecycle_test.sh"
+      - "buildscripts/minio-upgrade.sh"
+      - "buildscripts/sign-release-rpms.sh"
+      - "buildscripts/verify-build-provenance.sh"
+      - "buildscripts/check-release-state.sh"
+      - "buildscripts/check-release-state_test.sh"
+      - "buildscripts/verify-rebrand.sh"
+      - "buildscripts/verify-helm-migration.sh"
+      - "buildscripts/helm-migration-guard/**"
+      - "helm/silo/**"
+      - "buildscripts/rebrand-guard/**"
+      - "buildscripts/gen-ldflags.go"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/docker-release.yml"
+      - ".github/workflows/finalize-release.yml"
+      - ".github/workflows/test-release.yml"
+      - ".gitignore"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Compute test variables
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="RELEASE.2026-02-14T12-00-00Z"
+          VERSION_COLON="2026-02-14T12:00:00Z"
+          PKG_VERSION="20260214120000.0.0"
+          LDFLAGS="$(MINIO_RELEASE=RELEASE go run buildscripts/gen-ldflags.go "${VERSION_COLON}")"
+          {
+            echo "RELEASE_TAG=${RELEASE_TAG}"
+            echo "PKG_VERSION=${PKG_VERSION}"
+            echo "LDFLAGS=${LDFLAGS}"
+          } >> "${GITHUB_ENV}"
+          echo "PKG_VERSION: ${PKG_VERSION}"
+          echo "LDFLAGS: ${LDFLAGS}"
+
+      - name: GoReleaser config check
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: check --config .github/goreleaser.yml
+
+      - name: Validate Helm chart and legacy upgrade identity
+        run: buildscripts/verify-helm-migration.sh
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.50.0
+
+      - name: Build snapshot artifacts
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          # A pull-request snapshot has no trusted release identity. Exercise
+          # the SBOM/checksum pipeline here, and reserve keyless signing for
+          # the tag-triggered release workflow with GitHub OIDC.
+          args: release --snapshot --clean --skip=publish,docker,sign --config .github/goreleaser.yml
+        env:
+          LDFLAGS: ${{ env.LDFLAGS }}
+          PKG_VERSION: ${{ env.PKG_VERSION }}
+
+      - name: Verify archive SBOM and checksum coverage
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find dist -maxdepth 1 -type f -name 'silo_*.tar.gz' | sort)
+          mapfile -t sboms < <(find dist -maxdepth 1 -type f -name 'silo_*.tar.gz.sbom.json' | sort)
+          test "${#archives[@]}" -eq 6
+          test "${#sboms[@]}" -eq 6
+          manifest="dist/silo_${PKG_VERSION}_checksums.txt"
+          test -s "${manifest}"
+          (
+            cd dist
+            sha256sum --check "$(basename "${manifest}")"
+          )
+          test "$(wc -l < "${manifest}" | tr -d ' ')" -eq 12
+
+      - name: Verify binary provenance stamps
+        run: |
+          set -euo pipefail
+          buildscripts/verify-build-provenance.sh
+
+      - name: Install package validation tools
+        run: |
+          set -euo pipefail
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+          sudo apt-get update
+          sudo apt-get install --yes rpm binutils
+
+      - name: Package snapshot binaries with nFPM
+        run: |
+          set -euo pipefail
+          buildscripts/package-release.sh
+
+      - name: Validate package names, checksums, metadata, and payload
+        run: |
+          set -euo pipefail
+          cd dist/packages
+
+          # The signing script asserts these same values, but it runs on the
+          # maintainer's machine after the release workflow has already built
+          # and uploaded. Take its expectations as the single source of truth
+          # so nfpm.yml and the signing script cannot drift apart without
+          # failing here first, while a fix is still cheap.
+          #
+          # This grep is deliberately limited to the eight identity variables,
+          # all of which are single-line. That is what makes the eval safe:
+          # should one ever become multi-line, the grep captures an
+          # unterminated quote and the eval aborts on a syntax error under
+          # set -e rather than quietly binding an empty value and comparing
+          # against nothing. expected_payload is multi-line by design and must
+          # stay out of this set for the same reason.
+          eval "$(grep -E '^expected_(release|vendor|packager|url|summary|description|license|group)=' \
+            ../../buildscripts/sign-release-rpms.sh)"
+          for value in "${expected_release}" "${expected_vendor}" "${expected_packager}" \
+                       "${expected_url}" "${expected_summary}" "${expected_description}" \
+                       "${expected_license}" "${expected_group}"; do
+            test -n "${value}"
+          done
+
+          # These are the public download names; a drift here breaks every
+          # script that fetches packages by URL. RPM and DEB carry the PGSTY
+          # release segment; APK cannot (Alpine pkgrel admits only -r<integer>),
+          # so it stays bare. package-release.sh builds the same three shapes.
+          expected=(
+            "silo-${PKG_VERSION}-${expected_release}.aarch64.rpm"
+            "silo-${PKG_VERSION}-${expected_release}.x86_64.rpm"
+            "silo_${PKG_VERSION}-${expected_release}_amd64.deb"
+            "silo_${PKG_VERSION}-${expected_release}_arm64.deb"
+            "silo_${PKG_VERSION}_aarch64.apk"
+            "silo_${PKG_VERSION}_x86_64.apk"
+          )
+
+          for package in "${expected[@]}"; do
+            test -s "${package}"
+            test -s "${package}.sha256sum"
+            sha256sum --check "${package}.sha256sum"
+          done
+
+          test "$(find . -maxdepth 1 -type f \( -name '*.rpm' -o -name '*.deb' -o -name '*.apk' \) | wc -l)" -eq 6
+
+          service_sha="$(sha256sum ../../silo.service | awk '{print $1}')"
+          defaults_sha="$(sha256sum ../../silo.env | awk '{print $1}')"
+          sysusers_sha="$(sha256sum ../../silo.sysusers | awk '{print $1}')"
+          license_sha="$(sha256sum ../../LICENSE | awk '{print $1}')"
+          notice_sha="$(sha256sum ../../NOTICE | awk '{print $1}')"
+
+          rpm_file="silo-${PKG_VERSION}-${expected_release}.x86_64.rpm"
+          test "$(rpm -qp --queryformat '%{RELEASE}' "${rpm_file}")" = "${expected_release}"
+          test "$(rpm -qp --queryformat '%{VENDOR}' "${rpm_file}")" = "${expected_vendor}"
+          test "$(rpm -qp --queryformat '%{PACKAGER}' "${rpm_file}")" = "${expected_packager}"
+          test "$(rpm -qp --queryformat '%{URL}' "${rpm_file}")" = "${expected_url}"
+          test "$(rpm -qp --queryformat '%{SUMMARY}' "${rpm_file}")" = "${expected_summary}"
+          test "$(rpm -qp --queryformat '%{DESCRIPTION}' "${rpm_file}")" = "${expected_description}"
+          test "$(rpm -qp --queryformat '%{LICENSE}' "${rpm_file}")" = "${expected_license}"
+          test "$(rpm -qp --queryformat '%{GROUP}' "${rpm_file}")" = "${expected_group}"
+          rpm -qpl "${rpm_file}" | grep -Fx '/usr/bin/silo'
+          rpm -qpl "${rpm_file}" | grep -Fx '/usr/lib/systemd/system/silo.service'
+          rpm -qpl "${rpm_file}" | grep -Fx '/etc/default/silo'
+          rpm -qpl "${rpm_file}" | grep -Fx '/usr/lib/sysusers.d/silo.conf'
+          rpm -qpl "${rpm_file}" | grep -Fx '/usr/share/doc/silo/LICENSE'
+          rpm -qpl "${rpm_file}" | grep -Fx '/usr/share/doc/silo/NOTICE'
+          test "$(rpm -qpl "${rpm_file}" | wc -l)" -eq 6
+          # nfpm only honors type: license on rpm, which is why nfpm.yml
+          # declares the license materials once per packager. Pin the rpm
+          # %license flag so that split cannot silently regress.
+          rpm -qp --queryformat '[%{FILEFLAGS:fflags} %{FILENAMES}\n]' "${rpm_file}" \
+            | grep -Fx 'l /usr/share/doc/silo/LICENSE'
+          rpm -qp --queryformat '[%{FILEFLAGS:fflags} %{FILENAMES}\n]' "${rpm_file}" \
+            | grep -Fx 'l /usr/share/doc/silo/NOTICE'
+          if rpm -qp --conflicts "${rpm_file}" | grep -qi minio; then
+            echo "RPM must not declare a cross-name conflict with MinIO" >&2
+            exit 1
+          fi
+          if rpm -qp --obsoletes "${rpm_file}" | grep -qi minio; then
+            echo "RPM must not obsolete a MinIO package" >&2
+            exit 1
+          fi
+          if rpm -qp --provides "${rpm_file}" | grep -qi minio; then
+            echo "RPM must not provide a MinIO package alias" >&2
+            exit 1
+          fi
+
+          deb_file="silo_${PKG_VERSION}-${expected_release}_amd64.deb"
+          test "$(dpkg-deb --field "${deb_file}" Maintainer)" = "${expected_packager}"
+          test "$(dpkg-deb --field "${deb_file}" Version)" = "${PKG_VERSION}-${expected_release}"
+          test "$(dpkg-deb --field "${deb_file}" License)" = "${expected_license}"
+          test "$(dpkg-deb --field "${deb_file}" Section)" = "utils"
+          test "$(dpkg-deb --field "${deb_file}" Homepage)" = "${expected_url}"
+          test "$(dpkg-deb --field "${deb_file}" Description)" = "${expected_description}"
+          dpkg-deb --contents "${deb_file}" | grep -E 'usr/bin/silo$'
+          dpkg-deb --contents "${deb_file}" | grep -E 'usr/lib/systemd/system/silo\.service$'
+          dpkg-deb --contents "${deb_file}" | grep -E 'etc/default/silo$'
+          dpkg-deb --contents "${deb_file}" | grep -E 'usr/lib/sysusers\.d/silo\.conf$'
+          dpkg-deb --contents "${deb_file}" | grep -E 'usr/share/doc/silo/LICENSE$'
+          dpkg-deb --contents "${deb_file}" | grep -E 'usr/share/doc/silo/NOTICE$'
+          test "$(dpkg-deb --contents "${deb_file}" | awk '$1 !~ /^d/ { count++ } END { print count + 0 }')" -eq 6
+          test -z "$(dpkg-deb --field "${deb_file}" Conflicts)"
+          test -z "$(dpkg-deb --field "${deb_file}" Replaces)"
+          test -z "$(dpkg-deb --field "${deb_file}" Provides)"
+
+          apk_info="$(tar -xOzf "silo_${PKG_VERSION}_x86_64.apk" .PKGINFO)"
+          grep -Fx "pkgver = ${PKG_VERSION}" <<< "${apk_info}"
+          grep -Fx "url = ${expected_url}" <<< "${apk_info}"
+          grep -Fx "maintainer = ${expected_packager}" <<< "${apk_info}"
+          grep -Fx "license = ${expected_license}" <<< "${apk_info}"
+          grep -Fx "pkgdesc = ${expected_description}" <<< "${apk_info}"
+          tar -tzf "silo_${PKG_VERSION}_x86_64.apk" | grep -Fx 'usr/bin/silo'
+          tar -tzf "silo_${PKG_VERSION}_x86_64.apk" | grep -Fx 'usr/lib/systemd/system/silo.service'
+          tar -tzf "silo_${PKG_VERSION}_x86_64.apk" | grep -Fx 'etc/default/silo'
+          tar -tzf "silo_${PKG_VERSION}_x86_64.apk" | grep -Fx 'usr/lib/sysusers.d/silo.conf'
+          tar -tzf "silo_${PKG_VERSION}_x86_64.apk" | grep -Fx 'usr/share/doc/silo/LICENSE'
+          tar -tzf "silo_${PKG_VERSION}_x86_64.apk" | grep -Fx 'usr/share/doc/silo/NOTICE'
+          test "$(tar -tzf "silo_${PKG_VERSION}_x86_64.apk" | awk '$0 !~ /^\./ && $0 !~ /\/$/ { count++ } END { print count + 0 }')" -eq 6
+          if grep -Ei '^provides = .*minio' <<< "${apk_info}"; then
+            echo "APK must not provide a MinIO package alias" >&2
+            exit 1
+          fi
+
+          for arch in amd64 arm64; do
+            if [ "${arch}" = amd64 ]; then
+              rpm_arch=x86_64
+              deb_arch=amd64
+              apk_arch=x86_64
+            else
+              rpm_arch=aarch64
+              deb_arch=arm64
+              apk_arch=aarch64
+            fi
+
+            test "$(rpm -qp --queryformat '%{ARCH}' "silo-${PKG_VERSION}-${expected_release}.${rpm_arch}.rpm")" = "${rpm_arch}"
+            test "$(dpkg-deb --field "silo_${PKG_VERSION}-${expected_release}_${deb_arch}.deb" Architecture)" = "${deb_arch}"
+            grep -Fx "arch = ${apk_arch}" <<< "$(tar -xOzf "silo_${PKG_VERSION}_${apk_arch}.apk" .PKGINFO)"
+
+            # Accepted weakness: this takes the first match, unsorted, where
+            # find_binary in package-release.sh demands exactly one. It cannot
+            # be reached with an ambiguous match today, because packaging runs
+            # earlier in this same job and hard-fails on one. Revisit if
+            # goamd64 gains a second level, or if find_binary's exactly-one
+            # contract is ever relaxed -- at that point this weak copy would be
+            # the only one left choosing silently.
+            source_binary="$(find .. -maxdepth 2 -type f -path "../silo_linux_${arch}*/silo" | head -n 1)"
+            source_sha="$(sha256sum "${source_binary}" | awk '{print $1}')"
+
+            # Do not pipe rpm2cpio here: Debian's build exits non-zero even when
+            # it writes a correct payload, which trips `set -o pipefail`. Use
+            # rpm's own digests instead -- -K checks the payload against the
+            # header, and FILEDIGESTS is the sha256 rpm itself verifies on
+            # install.
+            rpm -K "silo-${PKG_VERSION}-${expected_release}.${rpm_arch}.rpm"
+            rpm_sha="$(rpm -qp --queryformat '[%{FILENAMES} %{FILEDIGESTS}\n]' \
+              "silo-${PKG_VERSION}-${expected_release}.${rpm_arch}.rpm" | awk '$1 == "/usr/bin/silo" { print $2 }')"
+            rpm_service_sha="$(rpm -qp --queryformat '[%{FILENAMES} %{FILEDIGESTS}\n]' \
+              "silo-${PKG_VERSION}-${expected_release}.${rpm_arch}.rpm" | awk '$1 == "/usr/lib/systemd/system/silo.service" { print $2 }')"
+            rpm_defaults_sha="$(rpm -qp --queryformat '[%{FILENAMES} %{FILEDIGESTS}\n]' \
+              "silo-${PKG_VERSION}-${expected_release}.${rpm_arch}.rpm" | awk '$1 == "/etc/default/silo" { print $2 }')"
+            rpm_sysusers_sha="$(rpm -qp --queryformat '[%{FILENAMES} %{FILEDIGESTS}\n]' \
+              "silo-${PKG_VERSION}-${expected_release}.${rpm_arch}.rpm" | awk '$1 == "/usr/lib/sysusers.d/silo.conf" { print $2 }')"
+            rpm_license_sha="$(rpm -qp --queryformat '[%{FILENAMES} %{FILEDIGESTS}\n]' \
+              "silo-${PKG_VERSION}-${expected_release}.${rpm_arch}.rpm" | awk '$1 == "/usr/share/doc/silo/LICENSE" { print $2 }')"
+            rpm_notice_sha="$(rpm -qp --queryformat '[%{FILENAMES} %{FILEDIGESTS}\n]' \
+              "silo-${PKG_VERSION}-${expected_release}.${rpm_arch}.rpm" | awk '$1 == "/usr/share/doc/silo/NOTICE" { print $2 }')"
+            deb_sha="$(ar p "silo_${PKG_VERSION}-${expected_release}_${deb_arch}.deb" data.tar.gz | tar -xzOf - ./usr/bin/silo | sha256sum | awk '{print $1}')"
+            deb_service_sha="$(ar p "silo_${PKG_VERSION}-${expected_release}_${deb_arch}.deb" data.tar.gz | tar -xzOf - ./usr/lib/systemd/system/silo.service | sha256sum | awk '{print $1}')"
+            deb_defaults_sha="$(ar p "silo_${PKG_VERSION}-${expected_release}_${deb_arch}.deb" data.tar.gz | tar -xzOf - ./etc/default/silo | sha256sum | awk '{print $1}')"
+            deb_sysusers_sha="$(ar p "silo_${PKG_VERSION}-${expected_release}_${deb_arch}.deb" data.tar.gz | tar -xzOf - ./usr/lib/sysusers.d/silo.conf | sha256sum | awk '{print $1}')"
+            deb_license_sha="$(ar p "silo_${PKG_VERSION}-${expected_release}_${deb_arch}.deb" data.tar.gz | tar -xzOf - ./usr/share/doc/silo/LICENSE | sha256sum | awk '{print $1}')"
+            deb_notice_sha="$(ar p "silo_${PKG_VERSION}-${expected_release}_${deb_arch}.deb" data.tar.gz | tar -xzOf - ./usr/share/doc/silo/NOTICE | sha256sum | awk '{print $1}')"
+            apk_sha="$(tar -xzOf "silo_${PKG_VERSION}_${apk_arch}.apk" usr/bin/silo | sha256sum | awk '{print $1}')"
+            apk_service_sha="$(tar -xzOf "silo_${PKG_VERSION}_${apk_arch}.apk" usr/lib/systemd/system/silo.service | sha256sum | awk '{print $1}')"
+            apk_defaults_sha="$(tar -xzOf "silo_${PKG_VERSION}_${apk_arch}.apk" etc/default/silo | sha256sum | awk '{print $1}')"
+            apk_sysusers_sha="$(tar -xzOf "silo_${PKG_VERSION}_${apk_arch}.apk" usr/lib/sysusers.d/silo.conf | sha256sum | awk '{print $1}')"
+            apk_license_sha="$(tar -xzOf "silo_${PKG_VERSION}_${apk_arch}.apk" usr/share/doc/silo/LICENSE | sha256sum | awk '{print $1}')"
+            apk_notice_sha="$(tar -xzOf "silo_${PKG_VERSION}_${apk_arch}.apk" usr/share/doc/silo/NOTICE | sha256sum | awk '{print $1}')"
+
+            test "${source_sha}" = "${rpm_sha}"
+            test "${source_sha}" = "${deb_sha}"
+            test "${source_sha}" = "${apk_sha}"
+            test "${service_sha}" = "${rpm_service_sha}"
+            test "${service_sha}" = "${deb_service_sha}"
+            test "${service_sha}" = "${apk_service_sha}"
+            test "${defaults_sha}" = "${rpm_defaults_sha}"
+            test "${defaults_sha}" = "${deb_defaults_sha}"
+            test "${defaults_sha}" = "${apk_defaults_sha}"
+            test "${sysusers_sha}" = "${rpm_sysusers_sha}"
+            test "${sysusers_sha}" = "${deb_sysusers_sha}"
+            test "${sysusers_sha}" = "${apk_sysusers_sha}"
+            test "${license_sha}" = "${rpm_license_sha}"
+            test "${license_sha}" = "${deb_license_sha}"
+            test "${license_sha}" = "${apk_license_sha}"
+            test "${notice_sha}" = "${rpm_notice_sha}"
+            test "${notice_sha}" = "${deb_notice_sha}"
+            test "${notice_sha}" = "${apk_notice_sha}"
+          done
+
+          find . -maxdepth 1 -type f | sort
+
+      - name: Build release runtime image and verify graceful shutdown
+        run: |
+          set -euo pipefail
+          # docker-release.yml is workflow_dispatch only, so this is the only
+          # automated build of the release runtime layer and entrypoint before a
+          # real publish. Assemble a minimal image from the linux/amd64 binary
+          # goreleaser already produced; the mcli-download build stage is skipped
+          # on purpose to keep this gate offline and deterministic.
+          ctx="$(mktemp -d)"
+          tar -xzf "dist/silo_${PKG_VERSION}_linux_amd64.tar.gz" -C "${ctx}" silo
+          cp dockerscripts/docker-entrypoint.sh "${ctx}/docker-entrypoint.sh"
+          {
+            echo "FROM registry.access.redhat.com/ubi9/ubi-micro:latest"
+            echo "COPY silo /usr/bin/silo"
+            echo "COPY docker-entrypoint.sh /usr/bin/docker-entrypoint.sh"
+            echo "RUN mkdir -p /data && chmod 0777 /data && chmod +x /usr/bin/silo /usr/bin/docker-entrypoint.sh"
+            echo 'ENV HOME=/tmp'
+            echo 'ENTRYPOINT ["/usr/bin/docker-entrypoint.sh"]'
+            echo 'CMD ["silo"]'
+          } > "${ctx}/Dockerfile"
+          docker build -t silo-runtime-test:snapshot "${ctx}"
+
+          # PID 1 must be silo, not the entry shell, on every privilege path, so
+          # a SIGTERM from docker stop reaches the server and it exits gracefully
+          # instead of being killed at the stop timeout. Regression guard for the
+          # exec-into-chroot entrypoint fix.
+          assert_graceful() {
+            name="$1"; shift
+            docker rm -f "${name}" >/dev/null 2>&1 || true
+            docker run -d --name "${name}" \
+              -e MINIO_CI_CD=1 -e MINIO_ROOT_USER=ciadmin -e MINIO_ROOT_PASSWORD=ciadmin-secret-123 \
+              "$@" silo-runtime-test:snapshot silo server /data --address :9000 >/dev/null
+            up=""
+            for _ in $(seq 1 60); do
+              if docker logs "${name}" 2>&1 | grep -q "API:"; then up=1; break; fi
+              if [ "$(docker inspect -f '{{.State.Running}}' "${name}")" != "true" ]; then break; fi
+              sleep 1
+            done
+            if [ -z "${up}" ]; then echo "server did not start (${name}):"; docker logs "${name}" | tail -5; exit 1; fi
+            pid1="$(docker exec "${name}" cat /proc/1/comm 2>/dev/null || echo '?')"
+            start="$(date +%s)"; docker stop -t 15 "${name}" >/dev/null; end="$(date +%s)"
+            code="$(docker inspect -f '{{.State.ExitCode}}' "${name}")"
+            elapsed=$((end - start))
+            echo "${name}: pid1=${pid1} stop=${elapsed}s exit=${code}"
+            graceful=0; docker logs "${name}" 2>&1 | grep -q "Exiting on signal" && graceful=1
+            docker rm -f "${name}" >/dev/null 2>&1 || true
+            [ "${graceful}" = "1" ] || { echo "no graceful-shutdown log (${name}) - signal not forwarded"; exit 1; }
+            [ "${code}" = "0" ] || { echo "non-zero exit (${name}): ${code}"; exit 1; }
+            [ "${elapsed}" -lt 10 ] || { echo "shutdown too slow (${name}): ${elapsed}s - signal not forwarded"; exit 1; }
+          }
+          assert_graceful silo-rt-default
+          assert_graceful silo-rt-dropuser -e MINIO_USERNAME=silo-user -e MINIO_GROUPNAME=silo-group
+          assert_graceful silo-rt-rootless --user 1001:1001
+
+          # The compatibility shim translates only the legacy first argv token;
+          # the image contains no /usr/bin/minio file.
+          docker run --rm silo-runtime-test:snapshot sh -c 'test ! -e /usr/bin/minio'
+          docker run --rm -d --name silo-rt-legacy \
+            -e MINIO_CI_CD=1 -e MINIO_ROOT_USER=ciadmin -e MINIO_ROOT_PASSWORD=ciadmin-secret-123 \
+            silo-runtime-test:snapshot minio server /data --address :9000 >/dev/null
+          sleep 2
+          test "$(docker exec silo-rt-legacy cat /proc/1/comm)" = silo
+          docker rm -f silo-rt-legacy >/dev/null
+
+      - name: Build distroless runtime image and verify native healthcheck
+        run: |
+          set -euo pipefail
+          # Unlike the classic image, Dockerfile.distroless has no release
+          # download stages, so the real shipped file can be built and gated
+          # here. It must keep working with nothing in it but the silo
+          # binary: no shell, no mc, no entrypoint script.
+          ctx="$(mktemp -d)"
+          tar -xzf "dist/silo_${PKG_VERSION}_linux_amd64.tar.gz" -C "${ctx}" silo
+          cp Dockerfile.distroless LICENSE NOTICE CREDITS "${ctx}/"
+          docker build -t silo-distroless-test:snapshot -f "${ctx}/Dockerfile.distroless" "${ctx}"
+
+          # HEALTHCHECK is a Docker extension absent from the OCI image
+          # spec; assert the exact probe command survived into the image
+          # config, not merely a substring of it.
+          test "$(docker inspect -f '{{json .Config.Healthcheck.Test}}' silo-distroless-test:snapshot)" \
+            = '["CMD","/usr/bin/silo","healthcheck","ready"]'
+
+          # /data ships in the image layer world-writable (issue #55):
+          # there is no entrypoint left to repair ownership at runtime.
+          # Export the rootfs once, then assert each required and each
+          # forbidden entry individually: tar's member-argument mode exits
+          # non-zero on any missing name, which under pipefail masks a
+          # found forbidden file, and -tv prints symlinks as 'name ->
+          # target' which defeats $-anchored greps.
+          probe="$(docker create silo-distroless-test:snapshot server /data)"
+          docker export "${probe}" -o "${ctx}/rootfs.tar"
+          docker rm "${probe}" >/dev/null
+          tar -tf "${ctx}/rootfs.tar" > "${ctx}/names.txt"
+          tar -tvf "${ctx}/rootfs.tar" > "${ctx}/verbose.txt"
+          grep -E '^drwxrwxrwx.* data/$' "${ctx}/verbose.txt" >/dev/null
+          for want in usr/bin/silo licenses/LICENSE licenses/NOTICE licenses/CREDITS; do
+            grep -Fxq "${want}" "${ctx}/names.txt" || { echo "missing ${want}"; exit 1; }
+          done
+          for forbid in bin/sh usr/bin/sh busybox/sh usr/bin/minio usr/bin/mc usr/bin/mcli; do
+            if grep -Fxq "${forbid}" "${ctx}/names.txt"; then
+              echo "distroless image unexpectedly contains ${forbid}"
+              exit 1
+            fi
+          done
+
+          # The baked-in healthcheck must drive Docker's health state on its
+          # own, the probe binary must be directly exec-able without any
+          # shell, and SIGTERM must still reach PID 1 (the server binary is
+          # the entrypoint) for a graceful stop.
+          assert_distroless() {
+            name="$1"; shift
+            docker rm -f "${name}" >/dev/null 2>&1 || true
+            docker run -d --name "${name}" \
+              -e MINIO_CI_CD=1 -e MINIO_ROOT_USER=ciadmin -e MINIO_ROOT_PASSWORD=ciadmin-secret-123 \
+              "$@" silo-distroless-test:snapshot server /data --address :9000 >/dev/null
+            status=""
+            for _ in $(seq 1 90); do
+              status="$(docker inspect -f '{{.State.Health.Status}}' "${name}" 2>/dev/null || echo '?')"
+              if [ "${status}" = "healthy" ]; then break; fi
+              if [ "$(docker inspect -f '{{.State.Running}}' "${name}")" != "true" ]; then break; fi
+              sleep 1
+            done
+            if [ "${status}" != "healthy" ]; then
+              echo "container never became healthy (${name}): status=${status}"
+              docker logs "${name}" 2>&1 | tail -5
+              exit 1
+            fi
+            docker exec "${name}" /usr/bin/silo healthcheck ready
+            docker exec "${name}" /usr/bin/silo healthcheck cluster
+            start="$(date +%s)"; docker stop -t 15 "${name}" >/dev/null; end="$(date +%s)"
+            code="$(docker inspect -f '{{.State.ExitCode}}' "${name}")"
+            elapsed=$((end - start))
+            graceful=0; docker logs "${name}" 2>&1 | grep -q "Exiting on signal" && graceful=1
+            echo "${name}: health=${status} stop=${elapsed}s exit=${code}"
+            docker rm -f "${name}" >/dev/null 2>&1 || true
+            [ "${graceful}" = "1" ] || { echo "no graceful-shutdown log (${name}) - signal not forwarded"; exit 1; }
+            [ "${code}" = "0" ] || { echo "non-zero exit (${name}): ${code}"; exit 1; }
+            [ "${elapsed}" -lt 10 ] || { echo "shutdown too slow (${name}): ${elapsed}s - signal not forwarded"; exit 1; }
+          }
+          assert_distroless silo-dl-default
+          assert_distroless silo-dl-rootless --user 1001:1001
+
+      - name: Validate release scripts
+        run: |
+          set -euo pipefail
+          bash -n buildscripts/package-release.sh
+          bash -n buildscripts/minio-upgrade.sh
+          bash -n buildscripts/sign-release-rpms.sh
+          bash -n buildscripts/verify-build-provenance.sh
+          bash -n buildscripts/check-release-state.sh
+          bash -n buildscripts/check-release-state_test.sh
+          bash -n buildscripts/verify-rebrand.sh
+          bash -n buildscripts/verify-helm-migration.sh
+          sh -n buildscripts/package/postinstall.sh
+          sh -n buildscripts/package/preremove.sh
+          bash -n buildscripts/package/lifecycle_test.sh
+          buildscripts/package/lifecycle_test.sh
+          bash -n dockerscripts/docker-entrypoint_test.sh
+          bash -n dockerscripts/download-static-curl.sh
+          dockerscripts/docker-entrypoint_test.sh
+          go run ./buildscripts/rebrand-guard
+          buildscripts/verify-rebrand.sh
+          test -x buildscripts/package-release.sh
+          test -x buildscripts/sign-release-rpms.sh
+          test -x buildscripts/verify-build-provenance.sh
+          test -x buildscripts/check-release-state.sh
+          test -x buildscripts/check-release-state_test.sh
+          test -x buildscripts/verify-rebrand.sh
+          test -x buildscripts/verify-helm-migration.sh
+          test -x buildscripts/package/postinstall.sh
+          test -x buildscripts/package/preremove.sh
+          test -x buildscripts/package/lifecycle_test.sh
+          test -x dockerscripts/docker-entrypoint_test.sh
+          buildscripts/check-release-state_test.sh

@@ -307,7 +307,7 @@ func (z *erasureServerPools) GetRawData(ctx context.Context, volume, file string
 						r = io.NopCloser(bytes.NewBuffer([]byte{}))
 					}
 					// Keep disk path instead of ID, to ensure that the downloaded zip file can be
-					// easily automated with `minio server hostname{1...n}/disk{1...m}`.
+					// easily automated with `silo server hostname{1...n}/disk{1...m}`.
 					err = fn(r, disk.Hostname(), disk.Endpoint().Path, pathJoin(volume, si.Name), si)
 					r.Close()
 					if err != nil {
@@ -1328,6 +1328,8 @@ func (z *erasureServerPools) CopyObject(ctx context.Context, srcBucket, srcObjec
 		return objInfo, err
 	}
 
+	// CopyObjectHandler predicts the outcome of this decision in
+	// copyRewritesObjectData(); keep the two in sync.
 	if cpSrcDstSame && srcInfo.metadataOnly {
 		// Version ID is set for the destination and source == destination version ID.
 		if dstOpts.VersionID != "" && srcOpts.VersionID == dstOpts.VersionID {

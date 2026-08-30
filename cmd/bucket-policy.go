@@ -34,6 +34,7 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/pkg/v3/policy"
+	"github.com/minio/pkg/v3/policy/condition"
 )
 
 // PolicySys - policy subsystem.
@@ -75,7 +76,104 @@ func getSTSConditionValues(r *http.Request, lc string, cred auth.Credentials) ma
 	return m
 }
 
+type conditionValueSource uint8
+
+const (
+	conditionValueFromHeader conditionValueSource = 1 << iota
+	conditionValueFromQuery
+)
+
+// clientSuppliedConditionKeys records where each request-derived condition
+// value actually comes from. Most x-amz-* values are headers, list parameters
+// are query-only, and storage class retains the compatible query form consumed
+// by object operations.
+var clientSuppliedConditionKeys = map[string]conditionValueSource{
+	"prefix":    conditionValueFromQuery,
+	"delimiter": conditionValueFromQuery,
+	"max-keys":  conditionValueFromQuery,
+	// AWS explicitly excludes the query-string form from this policy key,
+	// even though MinIO may consume it separately while verifying a presign.
+	"x-amz-content-sha256":                            conditionValueFromHeader,
+	"x-amz-copy-source":                               conditionValueFromHeader,
+	"x-amz-metadata-directive":                        conditionValueFromHeader,
+	"x-amz-server-side-encryption":                    conditionValueFromHeader,
+	"x-amz-server-side-encryption-aws-kms-key-id":     conditionValueFromHeader,
+	"x-amz-server-side-encryption-customer-algorithm": conditionValueFromHeader,
+	"x-amz-storage-class":                             conditionValueFromHeader | conditionValueFromQuery,
+}
+
+func acceptsConditionValueSource(key string, source conditionValueSource) bool {
+	name := strings.ToLower(key)
+	allowed, ok := clientSuppliedConditionKeys[name]
+	if !ok {
+		return true
+	}
+	if allowed&source == 0 {
+		return false
+	}
+	return source != conditionValueFromQuery || key == name
+}
+
+// internalConditionKeys holds every other name a condition key can resolve to.
+// Those name values MinIO derives for itself - identity from the credential,
+// time from the clock, transport from the connection - and a request must never
+// write one, whether or not the server populated it this time round: a name the
+// server left empty is as forgeable as one it filled in, and the condition
+// reading it cannot tell the difference.
+//
+// Deriving the set from the condition keys rather than from what
+// getConditionValues writes is what makes it complete. The engine reads by key
+// name, so the key list is the attack surface; enumerating the writes misses
+// every key the server has no value for, which is most of jwt: and ldap:. It
+// also defaults new upstream keys to reserved, which is the safe direction.
+//
+// Reserving a name only removes it from the condition map. Request handling is
+// untouched - a handler still reads its own query parameters and headers.
+//
+// aws:SourceIp is still only as trustworthy as the forwarding headers it is
+// computed from, see the note on GetSourceIPFromHeaders.
+var internalConditionKeys = func() map[string]struct{} {
+	keys := make(map[string]struct{}, 2*len(condition.AllSupportedKeys))
+	for _, keyName := range condition.AllSupportedKeys {
+		name := keyName.ToKey().Name()
+		if _, clientSupplied := clientSuppliedConditionKeys[name]; clientSupplied {
+			continue
+		}
+		// A condition key resolves against its exact name and falls back to the
+		// canonical MIME form, so both spellings have to be held. This is also
+		// what covers object lock, stored as Object-Lock-Mode and read as
+		// s3:object-lock-mode.
+		keys[name] = struct{}{}
+		keys[http.CanonicalHeaderKey(name)] = struct{}{}
+	}
+	return keys
+}()
+
+// Tag conditions name one tag key each, so the variable forms are reserved by
+// prefix; the bare names come from the loop above.
+var internalConditionKeyPrefixes = []string{"ExistingObjectTag/", "RequestObjectTag/"}
+
+func isInternalConditionKey(key string) bool {
+	if _, ok := internalConditionKeys[key]; ok {
+		return true
+	}
+	for _, prefix := range internalConditionKeyPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func getConditionValues(r *http.Request, lc string, cred auth.Credentials) map[string][]string {
+	return getConditionValuesWithExistingTags(r, lc, cred, "")
+}
+
+func getConditionValuesWithExistingTags(r *http.Request, lc string, cred auth.Credentials, existingTags string) map[string][]string {
+	return getConditionValuesWithTags(r, lc, cred, existingTags, nil)
+}
+
+func getConditionValuesWithTags(r *http.Request, lc string, cred auth.Credentials, existingTags string, requestTags *string) map[string][]string {
 	currTime := UTCNow()
 
 	var (
@@ -100,10 +198,13 @@ func getConditionValues(r *http.Request, lc string, cred auth.Credentials) map[s
 		}
 	}
 
-	vid := r.Form.Get(xhttp.VersionID)
+	// Match the version the object layer will act on: newContext and getOpts both
+	// TrimSpace this value, so leaving it untrimmed here would let a padded
+	// ?versionId=V%20 present a different s3:versionid than the effective version.
+	vid := strings.TrimSpace(r.Form.Get(xhttp.VersionID))
 	if vid == "" {
 		if u, err := url.Parse(r.Header.Get(xhttp.AmzCopySource)); err == nil {
-			vid = u.Query().Get(xhttp.VersionID)
+			vid = strings.TrimSpace(u.Query().Get(xhttp.VersionID))
 		}
 	}
 
@@ -136,32 +237,55 @@ func getConditionValues(r *http.Request, lc string, cred auth.Credentials) map[s
 		"principaltype":    {principalType},
 		"userid":           {username},
 		"username":         {username},
-		"versionid":        {vid},
 		"signatureversion": {signatureVersion},
 		"authType":         {authtype},
+	}
+
+	// Null conditions distinguish an absent key from a present key with an
+	// empty value. Only expose s3:versionid when the request names a version.
+	if vid != "" {
+		args["versionid"] = []string{vid}
 	}
 
 	if lc != "" {
 		args["LocationConstraint"] = []string{lc}
 	}
-
-	cloneHeader := r.Header.Clone()
-	if v := cloneHeader.Get("x-amz-signature-age"); v != "" {
-		args["signatureAge"] = []string{v}
-		cloneHeader.Del("x-amz-signature-age")
+	if storageClass, ok := getRequestHeaderOrQueryValue(r, xhttp.AmzStorageClass); ok {
+		args[strings.ToLower(xhttp.AmzStorageClass)] = []string{storageClass}
 	}
 
-	if userTags := cloneHeader.Get(xhttp.AmzObjectTagging); userTags != "" {
+	cloneHeader := r.Header.Clone()
+	signatureAge := cloneHeader.Get("x-amz-signature-age")
+	cloneHeader.Del("x-amz-signature-age")
+	// The presigned V4 verifier overwrites this internal scratch header after
+	// validating the signature. Ignore a value supplied on every other request
+	// type, where it would otherwise synthesize s3:signatureAge.
+	if authType == authTypePresigned && signatureAge != "" {
+		args["signatureAge"] = []string{signatureAge}
+	}
+
+	userTags := cloneHeader.Get(xhttp.AmzObjectTagging)
+	if requestTags != nil {
+		userTags = *requestTags
+	}
+	if userTags != "" {
 		tag, _ := tags.ParseObjectTags(userTags)
 		if tag != nil {
 			tagMap := tag.ToMap()
 			keys := make([]string, 0, len(tagMap))
 			for k, v := range tagMap {
-				args[pathJoin("ExistingObjectTag", k)] = []string{v}
 				args[pathJoin("RequestObjectTag", k)] = []string{v}
 				keys = append(keys, k)
 			}
 			args["RequestObjectTagKeys"] = keys
+		}
+	}
+	if existingTags != "" {
+		tag, _ := tags.ParseObjectTags(existingTags)
+		if tag != nil {
+			for k, v := range tag.ToMap() {
+				args[pathJoin("ExistingObjectTag", k)] = []string{v}
+			}
 		}
 	}
 
@@ -176,8 +300,20 @@ func getConditionValues(r *http.Request, lc string, cred auth.Credentials) map[s
 		cloneHeader.Del(objLock)
 	}
 
+	// The two loops below fold raw header and query values into the same map
+	// the server just filled in. Anything they add is indistinguishable, to a
+	// condition, from a value the server derived - and they merge by appending,
+	// so a supplied entry sits alongside the real one rather than replacing it.
+	// The source check keeps headers and query parameters in their actual roles;
+	// isInternalConditionKey keeps both apart from server-derived values.
 	for key, values := range cloneHeader {
-		if strings.EqualFold(key, xhttp.AmzObjectTagging) {
+		if strings.EqualFold(key, xhttp.AmzObjectTagging) || strings.EqualFold(key, xhttp.AmzStorageClass) {
+			continue
+		}
+		if !acceptsConditionValueSource(key, conditionValueFromHeader) {
+			continue
+		}
+		if isInternalConditionKey(key) {
 			continue
 		}
 		if existingValues, found := args[key]; found {
@@ -190,18 +326,16 @@ func getConditionValues(r *http.Request, lc string, cred auth.Credentials) map[s
 	cloneURLValues := make(url.Values, len(r.Form))
 	maps.Copy(cloneURLValues, r.Form)
 
-	for _, objLock := range []string{
-		xhttp.AmzObjectLockMode,
-		xhttp.AmzObjectLockLegalHold,
-		xhttp.AmzObjectLockRetainUntilDate,
-	} {
-		if values, ok := cloneURLValues[objLock]; ok {
-			args[strings.TrimPrefix(objLock, "X-Amz-")] = values
-		}
-		cloneURLValues.Del(objLock)
-	}
-
 	for key, values := range cloneURLValues {
+		if strings.EqualFold(key, xhttp.AmzObjectTagging) || strings.EqualFold(key, xhttp.AmzStorageClass) {
+			continue
+		}
+		if !acceptsConditionValueSource(key, conditionValueFromQuery) {
+			continue
+		}
+		if isInternalConditionKey(key) {
+			continue
+		}
 		if existingValues, found := args[key]; found {
 			args[key] = append(existingValues, values...)
 		} else {

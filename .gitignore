@@ -2,6 +2,7 @@
 cover.out
 *~
 minio
+silo
 !*/
 site/
 **/*.test
@@ -55,14 +56,16 @@ xattr
 xl-meta
 
 .gitignore
-.goreleaser.yml
 
 dist/
 
 
 .claude/
 .codex/
+AGENTS.md
+CLAUDE.md
 _bmad/
 _bmad-output/
-/build/
-/data/
+docs/security/
+docs/rebranding.md
+.release-sign/

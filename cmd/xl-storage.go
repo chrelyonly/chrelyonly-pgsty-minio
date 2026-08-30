@@ -788,6 +788,22 @@ func (s *xlStorage) getVolDir(volume string) (string, error) {
 	if volume == "" || volume == "." || volume == ".." {
 		return "", errVolumeNotFound
 	}
+	// Reject traversal smuggled inside the volume name itself, e.g. "../" or
+	// "..\", which the equality checks above do not catch.
+	//
+	// This must be evaluated on the raw argument and never on the joined
+	// result: pathJoin() below runs path.Clean() against an absolute
+	// drivePath, and Clean() *erases* leading ".." on an absolute path
+	// ("/drive/../../etc" becomes "/etc"), so a check placed after the join
+	// would silently accept an escaped path.
+	//
+	// This is also the only containment control covering callers that never
+	// reach storageRESTServer.getStorage() - notably the peer-S3 bucket RPCs
+	// (MakeBucket/HeadBucket/DeleteBucket/HealBucket), which drive
+	// MakeVol/StatVol/DeleteVol straight off globalLocalDrivesMap.
+	if hasBadPathComponent(volume) {
+		return "", errVolumeNotFound
+	}
 	volumeDir := pathJoin(s.drivePath, volume)
 	return volumeDir, nil
 }
@@ -2407,6 +2423,12 @@ func (s *xlStorage) CheckParts(ctx context.Context, volume string, path string, 
 		return nil, err
 	}
 
+	// Already-persisted metadata can carry this even though the boundary now
+	// refuses it, so the check belongs here too, not only at the wire edge.
+	if fi.HasNegativePartSize() {
+		return nil, errFileCorrupt
+	}
+
 	resp := CheckPartsResp{
 		// By default, all results have an unknown status
 		Results: make([]int, len(fi.Parts)),
@@ -3108,6 +3130,12 @@ func (s *xlStorage) VerifyFile(ctx context.Context, volume, path string, fi File
 		if err = Access(volumeDir); err != nil {
 			return nil, convertAccessError(err, errVolumeAccessDenied)
 		}
+	}
+
+	// See CheckParts: metadata already on disk can carry this even though the
+	// boundary now refuses it.
+	if fi.HasNegativePartSize() {
+		return nil, errFileCorrupt
 	}
 
 	resp := CheckPartsResp{

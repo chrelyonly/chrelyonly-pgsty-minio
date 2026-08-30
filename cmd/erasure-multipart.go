@@ -597,12 +597,15 @@ func (er erasureObjects) PutObjectPart(ctx context.Context, bucket, object, uplo
 	onlineDisks := er.getDisks()
 	writeQuorum := fi.WriteQuorum(er.defaultWQuorum())
 
-	if cs := fi.Metadata[hash.MinIOMultipartChecksum]; cs != "" {
-		if r.ContentCRCType().String() != cs {
+	expectedChecksumType, checksumEnabled := multipartChecksumType(fi.Metadata)
+	if checksumEnabled {
+		got := r.contentChecksumType()
+		if !expectedChecksumType.IsSet() || !got.IsSet() || got.Base() != expectedChecksumType {
 			return pi, InvalidArgument{
 				Bucket: bucket,
 				Object: fi.Name,
-				Err:    fmt.Errorf("checksum missing, want %q, got %q", cs, r.ContentCRCType().String()),
+				Err: fmt.Errorf("checksum missing, want %q, got %q",
+					fi.Metadata[hash.MinIOMultipartChecksum], got.String()),
 			}
 		}
 	}
@@ -725,6 +728,13 @@ func (er erasureObjects) PutObjectPart(ctx context.Context, bucket, object, uplo
 		}
 	}
 
+	partChecksums := r.contentChecksum()
+	if checksumEnabled && partChecksums[expectedChecksumType.String()] == "" {
+		err := fmt.Errorf("internal error: checksum missing after reading part, want %q", expectedChecksumType.String())
+		bugLogIf(ctx, err)
+		return pi, toObjectErr(err, bucket, object, uploadID)
+	}
+
 	partInfo := ObjectPartInfo{
 		Number:     partID,
 		ETag:       md5hex,
@@ -732,7 +742,7 @@ func (er erasureObjects) PutObjectPart(ctx context.Context, bucket, object, uplo
 		ActualSize: actualSize,
 		ModTime:    UTCNow(),
 		Index:      index,
-		Checksums:  r.ContentCRC(),
+		Checksums:  partChecksums,
 	}
 
 	partFI, err := partInfo.MarshalMsg(nil)
@@ -1163,11 +1173,20 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 	var checksumType hash.ChecksumType
 	if cs := fi.Metadata[hash.MinIOMultipartChecksum]; cs != "" {
 		checksumType = hash.NewChecksumType(cs, fi.Metadata[hash.MinIOMultipartChecksumType])
-		if opts.WantChecksum != nil && !opts.WantChecksum.Type.Is(checksumType) {
-			return oi, InvalidArgument{
-				Bucket: bucket,
-				Object: fi.Name,
-				Err:    fmt.Errorf("checksum type mismatch. got %q (%s) expected %q (%s)", checksumType.String(), checksumType.ObjType(), opts.WantChecksum.Type.String(), opts.WantChecksum.Type.ObjType()),
+		expectedType := checksumType | hash.ChecksumMultipart | hash.ChecksumIncludesMultipart
+		if opts.WantChecksum != nil {
+			providedType := opts.WantChecksum.Type | hash.ChecksumMultipart | hash.ChecksumIncludesMultipart
+			if providedType.Base() != expectedType.Base() {
+				return oi, InvalidArgument{
+					Bucket: bucket,
+					Object: fi.Name,
+					Err:    fmt.Errorf("checksum algorithm mismatch. got %q expected %q", providedType.String(), expectedType.String()),
+				}
+			}
+		}
+		if opts.wantChecksumType != "" {
+			if opts.wantChecksumType != expectedType.ObjType() {
+				return oi, completeMultipartChecksumTypeMismatch(opts.wantChecksumType, expectedType.ObjType())
 			}
 		}
 		checksumType |= hash.ChecksumMultipart | hash.ChecksumIncludesMultipart
@@ -1290,11 +1309,26 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 				hash.ChecksumSHA256.String():    part.ChecksumSHA256,
 				hash.ChecksumCRC64NVME.String(): part.ChecksumCRC64NVME,
 			}
-			if wantCS[checksumType.String()] != crc {
+			gotCS := wantCS[checksumType.String()]
+			var suppliedAnyCS bool
+			for _, v := range wantCS {
+				if v != "" {
+					suppliedAnyCS = true
+					break
+				}
+			}
+			// Full object completions may omit part checksums. Composite
+			// completions may not. Any checksum that is supplied is still
+			// validated, including one sent under the wrong algorithm.
+			if !suppliedAnyCS {
+				if !checksumType.FullObjectRequested() {
+					return oi, missingPartChecksum(checksumType.String(), part.PartNumber)
+				}
+			} else if gotCS != crc {
 				return oi, InvalidPart{
 					PartNumber: part.PartNumber,
-					ExpETag:    wantCS[checksumType.String()],
-					GotETag:    crc,
+					ExpETag:    crc,
+					GotETag:    gotCS,
 				}
 			}
 			cs := hash.NewChecksumString(checksumType.String(), crc)
@@ -1344,15 +1378,14 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 	if opts.WantChecksum != nil {
 		if checksumType.FullObjectRequested() {
 			if opts.WantChecksum.Encoded != checksum.Encoded {
-				err := hash.ChecksumMismatch{
-					Want: opts.WantChecksum.Encoded,
-					Got:  checksum.Encoded,
-				}
-				return oi, err
+				return oi, completeMultipartChecksumMismatch(checksumType.String())
 			}
 		} else {
 			err := opts.WantChecksum.Matches(checksumCombined, len(parts))
 			if err != nil {
+				if hash.IsChecksumMismatch(err) {
+					return oi, completeMultipartChecksumMismatch(checksumType.String())
+				}
 				return oi, err
 			}
 		}

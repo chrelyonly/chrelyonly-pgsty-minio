@@ -24,11 +24,51 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"testing"
 
 	"github.com/minio/minio/internal/auth"
 )
+
+func TestListObjectsNonExistentBucketHandler(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{t: t, objAPITest: testListObjectsNonExistentBucketHandler})
+}
+
+func testListObjectsNonExistentBucketHandler(_ ObjectLayer, instanceType, _ string, apiRouter http.Handler,
+	credentials auth.Credentials, t *testing.T,
+) {
+	const bucket = "missing-bucket"
+	testCases := []struct {
+		name  string
+		query url.Values
+	}{
+		{name: "ListObjects", query: url.Values{"prefix": {"/"}}},
+		{name: "ListObjectsV2", query: url.Values{"list-type": {"2"}, "prefix": {"/"}}},
+		{name: "ListObjectVersions", query: url.Values{"versions": {""}, "prefix": {"/"}}},
+	}
+
+	for _, tc := range testCases {
+		req, err := newTestSignedRequestV4(http.MethodGet, makeTestTargetURL("", bucket, "", tc.query), 0, nil,
+			credentials.AccessKey, credentials.SecretKey, nil)
+		if err != nil {
+			t.Fatalf("%s: %s: failed to create request: %v", instanceType, tc.name, err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: %s: expected status %d, got %d", instanceType, tc.name, http.StatusNotFound, rec.Code)
+		}
+
+		var apiErr APIErrorResponse
+		if err = xml.Unmarshal(rec.Body.Bytes(), &apiErr); err != nil {
+			t.Fatalf("%s: %s: failed to decode error response: %v", instanceType, tc.name, err)
+		}
+		if apiErr.Code != "NoSuchBucket" {
+			t.Errorf("%s: %s: expected NoSuchBucket, got %q", instanceType, tc.name, apiErr.Code)
+		}
+	}
+}
 
 // Wrapper for calling RemoveBucket HTTP handler tests for both Erasure multiple disks and single node setup.
 func TestRemoveBucketHandler(t *testing.T) {
@@ -943,4 +983,131 @@ func testAPIDeleteMultipleObjectsHandler(obj ObjectLayer, instanceType, bucketNa
 	// execute the object layer set to `nil` test.
 	// `ExecObjectLayerAPINilTest` manages the operation.
 	ExecObjectLayerAPINilTest(t, nilBucket, nilObject, instanceType, apiRouter, nilReq)
+}
+
+func TestAPIDeleteMultipleObjectsVersionIDNullCondition(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testAPIDeleteMultipleObjectsVersionIDNullCondition,
+		endpoints:         []string{"DeleteMultipleObjects", "PutBucketPolicy"},
+		makeBucketOptions: MakeBucketOptions{VersioningEnabled: true},
+	})
+}
+
+func testAPIDeleteMultipleObjectsVersionIDNullCondition(obj ObjectLayer, instanceType, bucketName string, apiRouter http.Handler,
+	credentials auth.Credentials, t *testing.T,
+) {
+	versionIDs := make(map[string]string, 4)
+	for _, objectName := range []string{
+		"without-version-id-before",
+		"with-version-id",
+		"without-version-id-after",
+		"with-null-version-id",
+	} {
+		data := []byte(objectName)
+		info, err := obj.PutObject(t.Context(), bucketName, objectName,
+			mustGetPutObjReader(t, bytes.NewReader(data), int64(len(data)), "", ""), ObjectOptions{Versioned: true})
+		if err != nil {
+			t.Fatalf("%s: put %q: %v", instanceType, objectName, err)
+		}
+		if info.VersionID == "" {
+			t.Fatalf("%s: put %q did not create a version ID", instanceType, objectName)
+		}
+		versionIDs[objectName] = info.VersionID
+	}
+
+	policyBytes := fmt.Appendf(nil, `{
+		"Version":"2012-10-17",
+		"Statement":[{
+			"Effect":"Allow",
+			"Principal":"*",
+			"Action":"s3:DeleteObject",
+			"Resource":"arn:aws:s3:::%s/*",
+			"Condition":{"Null":{"s3:versionid":"true"}}
+		}]
+	}`, bucketName)
+	policyReq, err := newTestSignedRequestV4(http.MethodPut, getPutPolicyURL("", bucketName), int64(len(policyBytes)),
+		bytes.NewReader(policyBytes), credentials.AccessKey, credentials.SecretKey, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(policyRec, policyReq)
+	if policyRec.Code != http.StatusNoContent {
+		t.Fatalf("%s: put policy returned %d: %s", instanceType, policyRec.Code, policyRec.Body.String())
+	}
+
+	deleteBody := encodeResponse(DeleteObjectsRequest{Objects: []ObjectToDelete{
+		{ObjectV: ObjectV{ObjectName: "without-version-id-before"}},
+		{ObjectV: ObjectV{ObjectName: "with-version-id", VersionID: versionIDs["with-version-id"]}},
+		{ObjectV: ObjectV{ObjectName: "without-version-id-after"}},
+		{ObjectV: ObjectV{ObjectName: "with-null-version-id", VersionID: nullVersionID}},
+	}})
+	// A query-level versionId is not the version of every XML entry. Each
+	// object's optional VersionId remains the effective authorization value.
+	deleteURL := getDeleteMultipleObjectsURL("", bucketName) + "&versionId=query-level-decoy"
+	deleteReq, err := newTestRequest(http.MethodPost, deleteURL,
+		int64(len(deleteBody)), bytes.NewReader(deleteBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("%s: delete returned %d: %s", instanceType, deleteRec.Code, deleteRec.Body.String())
+	}
+
+	var response DeleteObjectsResponse
+	if err = xml.Unmarshal(deleteRec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("%s: decode response: %v: %s", instanceType, err, deleteRec.Body.String())
+	}
+	deleted := make(map[string]DeletedObject, len(response.DeletedObjects))
+	for _, object := range response.DeletedObjects {
+		deleted[object.ObjectName] = object
+	}
+	for _, objectName := range []string{"without-version-id-before", "without-version-id-after"} {
+		object, ok := deleted[objectName]
+		if !ok || !object.DeleteMarker || object.DeleteMarkerVersionID == "" {
+			t.Errorf("%s: %q was not a successful delete-marker creation: %+v", instanceType, objectName, response.DeletedObjects)
+		}
+	}
+	if len(deleted) != 2 {
+		t.Errorf("%s: unexpected deleted objects: %+v", instanceType, response.DeletedObjects)
+	}
+	errorsByKey := make(map[string]DeleteError, len(response.Errors))
+	for _, deleteErr := range response.Errors {
+		errorsByKey[deleteErr.Key] = deleteErr
+	}
+	for objectName, versionID := range map[string]string{
+		"with-version-id":      versionIDs["with-version-id"],
+		"with-null-version-id": nullVersionID,
+	} {
+		deleteErr, ok := errorsByKey[objectName]
+		if !ok || deleteErr.VersionID != versionID || deleteErr.Code != errorCodes[ErrAccessDenied].Code {
+			t.Errorf("%s: %q did not return AccessDenied for version %q: %+v", instanceType, objectName, versionID, response.Errors)
+		}
+	}
+	if len(errorsByKey) != 2 {
+		t.Errorf("%s: unexpected delete errors: %+v", instanceType, response.Errors)
+	}
+
+	// A simple delete adds a marker and keeps the old version. The explicitly
+	// named version must also remain because its policy condition did not match.
+	for objectName, versionID := range versionIDs {
+		if _, err = obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{VersionID: versionID}); err != nil {
+			t.Errorf("%s: version %s of %q was not preserved: %v", instanceType, versionID, objectName, err)
+		}
+	}
+	for _, objectName := range []string{"without-version-id-before", "without-version-id-after"} {
+		if _, err = obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{}); !isErrObjectNotFound(err) {
+			t.Errorf("%s: simple delete of %q did not hide the latest object behind a delete marker: %v", instanceType, objectName, err)
+		}
+	}
+	for _, objectName := range []string{"with-version-id", "with-null-version-id"} {
+		if info, err := obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{}); err != nil {
+			t.Errorf("%s: denied version delete removed latest %q: %v", instanceType, objectName, err)
+		} else if info.VersionID != versionIDs[objectName] {
+			t.Errorf("%s: latest version of %q changed from %s to %s", instanceType, objectName, versionIDs[objectName], info.VersionID)
+		}
+	}
 }

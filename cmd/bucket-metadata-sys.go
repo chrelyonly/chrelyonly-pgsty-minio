@@ -29,6 +29,7 @@ import (
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio-go/v7/pkg/tags"
+	"github.com/minio/minio/internal/bucket/cors"
 	bucketsse "github.com/minio/minio/internal/bucket/encryption"
 	"github.com/minio/minio/internal/bucket/lifecycle"
 	objectlock "github.com/minio/minio/internal/bucket/object/lock"
@@ -134,6 +135,9 @@ func (sys *BucketMetadataSys) updateAndParse(ctx context.Context, bucket string,
 	case bucketTaggingConfig:
 		meta.TaggingConfigXML = configData
 		meta.TaggingConfigUpdatedAt = updatedAt
+	case bucketCorsConfig:
+		meta.CorsConfigXML = configData
+		meta.CorsConfigUpdatedAt = updatedAt
 	case bucketQuotaConfigFile:
 		meta.QuotaConfigJSON = configData
 		meta.QuotaConfigUpdatedAt = updatedAt
@@ -357,6 +361,39 @@ func (sys *BucketMetadataSys) GetSSEConfig(bucket string) (*bucketsse.BucketSSEC
 		return nil, time.Time{}, BucketSSEConfigNotFound{Bucket: bucket}
 	}
 	return meta.sseConfig, meta.EncryptionConfigUpdatedAt, nil
+}
+
+// GetCorsConfig returns the CORS configuration for the given bucket.
+// The returned object must not be modified.
+func (sys *BucketMetadataSys) GetCorsConfig(bucket string) (*cors.Config, time.Time, error) {
+	meta, _, err := sys.GetConfig(GlobalContext, bucket)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if meta.corsConfigErr != nil {
+		return nil, meta.CorsConfigUpdatedAt, meta.corsConfigErr
+	}
+	if meta.corsConfig == nil {
+		return nil, time.Time{}, errConfigNotFound
+	}
+	return meta.corsConfig, meta.CorsConfigUpdatedAt, nil
+}
+
+// GetCorsConfigXML returns the raw stored CORS configuration XML for the
+// given bucket, preserving the document exactly as it was PUT (including
+// the S3 xmlns and any unmodeled elements).
+func (sys *BucketMetadataSys) GetCorsConfigXML(bucket string) ([]byte, time.Time, error) {
+	meta, _, err := sys.GetConfig(GlobalContext, bucket)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if meta.corsConfigErr != nil {
+		return nil, meta.CorsConfigUpdatedAt, meta.corsConfigErr
+	}
+	if len(meta.CorsConfigXML) == 0 {
+		return nil, time.Time{}, errConfigNotFound
+	}
+	return meta.CorsConfigXML, meta.CorsConfigUpdatedAt, nil
 }
 
 // CreatedAt returns the time of creation of bucket

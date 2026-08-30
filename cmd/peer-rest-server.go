@@ -610,6 +610,10 @@ func (s *peerRESTServer) VerifyBinaryHandler(w http.ResponseWriter, r *http.Requ
 		s.writeErrorResponse(w, errors.New("Invalid request"))
 		return
 	}
+	if globalInplaceUpdateDisabled {
+		s.writeErrorResponse(w, errInplaceUpdateDisabled)
+		return
+	}
 
 	if r.ContentLength < 0 {
 		s.writeErrorResponse(w, errInvalidArgument)
@@ -657,6 +661,10 @@ func (s *peerRESTServer) VerifyBinaryHandler(w http.ResponseWriter, r *http.Requ
 func (s *peerRESTServer) CommitBinaryHandler(w http.ResponseWriter, r *http.Request) {
 	if !s.IsValid(w, r) {
 		s.writeErrorResponse(w, errors.New("Invalid request"))
+		return
+	}
+	if globalInplaceUpdateDisabled {
+		s.writeErrorResponse(w, errInplaceUpdateDisabled)
 		return
 	}
 

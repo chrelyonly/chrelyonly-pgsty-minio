@@ -69,7 +69,11 @@ func (rs *rebalanceStats) update(bucket string, fi FileInfo) {
 
 	rs.NumVersions++
 	onDiskSz := int64(0)
-	if !fi.Deleted {
+	// DataBlocks comes from xl.meta and only fi.Deleted is checked above, so a
+	// zero here is an integer divide-by-zero rather than a bad statistic. This
+	// path does not build an Erasure, so NewErasure's validation does not cover
+	// it; leave the size at zero for metadata that cannot describe a layout.
+	if !fi.Deleted && fi.Erasure.DataBlocks > 0 {
 		onDiskSz = fi.Size * int64(fi.Erasure.DataBlocks+fi.Erasure.ParityBlocks) / int64(fi.Erasure.DataBlocks)
 	}
 	rs.Bytes += uint64(onDiskSz)

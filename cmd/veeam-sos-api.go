@@ -156,11 +156,11 @@ func veeamSOSAPIGetObject(ctx context.Context, bucket, object string, rs *HTTPRa
 	case systemXMLObject:
 		si := systemInfo{
 			ProtocolVersion: `"1.0"`,
-			ModelName:       "\"MinIO " + ReleaseTag + "\"",
+			ModelName:       "\"Silo " + ReleaseTag + "\"",
 		}
 		si.ProtocolCapabilities.CapacityInfo = true
 
-		// Default recommended block size with MinIO
+		// Default recommended block size with Silo.
 		si.SystemRecommendations.KBBlockSize = 4096
 
 		buf = encodeResponse(&si)

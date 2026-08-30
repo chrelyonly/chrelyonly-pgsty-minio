@@ -331,7 +331,7 @@ func (target *ElasticsearchTarget) checkAndInitClient(ctx context.Context) error
 		return errors.New("unable to determine support status of ES (should not happen)")
 
 	case ESSDeprecated:
-		return errors.New("there is no currently deprecated version of ES in MinIO")
+		return errors.New("there is no currently deprecated version of ES in Silo")
 
 	case ESSSupported:
 		target.client = clientV7

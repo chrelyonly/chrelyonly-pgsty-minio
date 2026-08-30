@@ -1101,7 +1101,7 @@ func (x *xlMetaV2) loadLegacy(buf []byte) error {
 				return msgp.WrapError(err, "Versions")
 			}
 			if cap(x.versions) >= int(zb0002) {
-				x.versions = (x.versions)[:zb0002]
+				x.versions = x.versions[:zb0002]
 			} else {
 				x.versions = make([]xlMetaV2ShallowVersion, zb0002, zb0002+1)
 			}
@@ -1590,6 +1590,13 @@ func (x *xlMetaV2) UpdateObjectVersion(fi FileInfo) error {
 
 // AddVersion adds a new version
 func (x *xlMetaV2) AddVersion(fi FileInfo) error {
+	// Refuse to persist metadata no shard size can be derived from. This is the
+	// single funnel every version write passes through, so rejecting here keeps
+	// the poison off disk rather than relying on every reader to cope with it.
+	if fi.HasNegativePartSize() {
+		return errFileCorrupt
+	}
+
 	if fi.VersionID == "" {
 		// this means versioning is not yet
 		// enabled or suspend i.e all versions

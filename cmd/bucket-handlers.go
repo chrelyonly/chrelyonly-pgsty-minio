@@ -1415,7 +1415,7 @@ func (api objectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 						Object:       ObjectInfo{Name: objInfo.Name},
 						ReqParams:    extractReqParams(r),
 						RespElements: extractRespElements(w),
-						UserAgent:    fmt.Sprintf("%s MinIO-Fan-Out (failed: %v)", r.UserAgent(), errs[i]),
+						UserAgent:    fmt.Sprintf("%s Silo-Fan-Out (failed: %v)", r.UserAgent(), errs[i]),
 						Host:         handlers.GetSourceIP(r),
 					})
 					continue
@@ -1434,7 +1434,7 @@ func (api objectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 					Object:       objInfo,
 					ReqParams:    extractReqParams(r),
 					RespElements: extractRespElements(w),
-					UserAgent:    r.UserAgent() + " " + "MinIO-Fan-Out",
+					UserAgent:    r.UserAgent() + " " + "Silo-Fan-Out",
 					Host:         handlers.GetSourceIP(r),
 				})
 			}
@@ -1462,7 +1462,7 @@ func (api objectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 					Object:       eventArgsList[i].Object,
 					ReqParams:    extractReqParams(r),
 					RespElements: extractRespElements(w),
-					UserAgent:    r.UserAgent() + " " + "MinIO-Fan-Out",
+					UserAgent:    r.UserAgent() + " " + "Silo-Fan-Out",
 					Host:         handlers.GetSourceIP(r),
 				})
 
@@ -1757,7 +1757,7 @@ func (api objectAPIHandlers) DeleteBucketHandler(w http.ResponseWriter, r *http.
 
 	if globalDNSConfig != nil {
 		if err := globalDNSConfig.Delete(bucket); err != nil {
-			dnsLogIf(ctx, fmt.Errorf("Unable to delete bucket DNS entry %w, please delete it manually, bucket on MinIO no longer exists", err))
+			dnsLogIf(ctx, fmt.Errorf("Unable to delete bucket DNS entry %w; please delete it manually because the bucket no longer exists on Silo", err))
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 			return
 		}
@@ -1844,12 +1844,7 @@ func (api objectAPIHandlers) PutBucketObjectLockConfigHandler(w http.ResponseWri
 	// We encode the xml bytes as base64 to ensure there are no encoding
 	// errors.
 	cfgStr := base64.StdEncoding.EncodeToString(configData)
-	replLogIf(ctx, globalSiteReplicationSys.BucketMetaHook(ctx, madmin.SRBucketMeta{
-		Type:             madmin.SRBucketMetaTypeObjectLockConfig,
-		Bucket:           bucket,
-		ObjectLockConfig: &cfgStr,
-		UpdatedAt:        updatedAt,
-	}))
+	replLogIf(ctx, globalSiteReplicationSys.BucketMetaHook(ctx, newSRBucketObjectLockMeta(bucket, &cfgStr, updatedAt)))
 
 	// Write success response.
 	writeSuccessResponseHeadersOnly(w)

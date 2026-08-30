@@ -31,6 +31,7 @@ import (
 
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7/pkg/tags"
+	"github.com/minio/minio/internal/bucket/cors"
 	bucketsse "github.com/minio/minio/internal/bucket/encryption"
 	"github.com/minio/minio/internal/bucket/lifecycle"
 	objectlock "github.com/minio/minio/internal/bucket/object/lock"
@@ -58,6 +59,9 @@ var (
 	enabledBucketVersioningConfig = []byte(`<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>`)
 )
 
+// Bucket CORS configuration file.
+const bucketCorsConfig = "cors.xml"
+
 //go:generate msgp -file $GOFILE
 
 // BucketMetadata contains bucket metadata.
@@ -80,6 +84,7 @@ type BucketMetadata struct {
 	ReplicationConfigXML        []byte
 	BucketTargetsConfigJSON     []byte
 	BucketTargetsConfigMetaJSON []byte
+	CorsConfigXML               []byte
 
 	PolicyConfigUpdatedAt            time.Time
 	ObjectLockConfigUpdatedAt        time.Time
@@ -92,6 +97,7 @@ type BucketMetadata struct {
 	NotificationConfigUpdatedAt      time.Time
 	BucketTargetsConfigUpdatedAt     time.Time
 	BucketTargetsConfigMetaUpdatedAt time.Time
+	CorsConfigUpdatedAt              time.Time
 	// Add a new UpdatedAt field and update lastUpdate function
 
 	// Unexported fields. Must be updated atomically.
@@ -106,6 +112,8 @@ type BucketMetadata struct {
 	replicationConfig      *replication.Config
 	bucketTargetConfig     *madmin.BucketTargets
 	bucketTargetConfigMeta map[string]string
+	corsConfig             *cors.Config
+	corsConfigErr          error
 }
 
 // newBucketMetadata creates BucketMetadata with the supplied name and Created to Now.
@@ -159,6 +167,9 @@ func (b BucketMetadata) lastUpdate() (t time.Time) {
 	}
 	if b.BucketTargetsConfigMetaUpdatedAt.After(t) {
 		t = b.BucketTargetsConfigMetaUpdatedAt
+	}
+	if b.CorsConfigUpdatedAt.After(t) {
+		t = b.CorsConfigUpdatedAt
 	}
 
 	return t
@@ -251,6 +262,12 @@ func loadBucketMetadataParse(ctx context.Context, objectAPI ObjectLayer, bucket 
 			return b, err
 		}
 	}
+	if b.corsConfigErr != nil {
+		// Keep the rest of the bucket metadata available so an operator can
+		// replace or delete a CORS document accepted by an older, more lenient
+		// build. Defer unrelated metadata migration until CORS is repaired.
+		return b, nil
+	}
 
 	// migrate unencrypted remote targets
 	if err = b.migrateTargetConfig(ctx, objectAPI); err != nil {
@@ -310,8 +327,27 @@ func (b *BucketMetadata) parseAllConfigs(ctx context.Context, objectAPI ObjectLa
 		b.taggingConfig = nil
 	}
 
+	b.corsConfigErr = nil
+	if len(b.CorsConfigXML) != 0 {
+		cfg, corsErr := cors.ParseBucketCorsConfig(bytes.NewReader(b.CorsConfigXML))
+		if corsErr == nil {
+			corsErr = cfg.Validate()
+		}
+		if corsErr != nil {
+			b.corsConfig = nil
+			b.corsConfigErr = fmt.Errorf("invalid bucket CORS configuration: %w", corsErr)
+		} else {
+			b.corsConfig = cfg
+		}
+	} else {
+		b.corsConfig = nil
+	}
+
 	if bytes.Equal(b.ObjectLockConfigXML, enabledBucketObjectLockConfig) {
-		b.VersioningConfigXML = enabledBucketVersioningConfig
+		config, versioningErr := versioning.ParseConfig(bytes.NewReader(b.VersioningConfigXML))
+		if versioningErr != nil || !config.Enabled() {
+			b.VersioningConfigXML = enabledBucketVersioningConfig
+		}
 	}
 
 	if len(b.ObjectLockConfigXML) != 0 {
@@ -502,6 +538,9 @@ func (b *BucketMetadata) defaultTimestamps() {
 func (b *BucketMetadata) Save(ctx context.Context, api ObjectLayer) error {
 	if err := b.parseAllConfigs(ctx, api); err != nil {
 		return err
+	}
+	if b.corsConfigErr != nil {
+		return b.corsConfigErr
 	}
 
 	data := make([]byte, 4, b.Msgsize()+4)

@@ -4,21 +4,23 @@
 # v8.17.0 (current latest) dropped the aarch64 build.
 STATIC_CURL_VERSION="v8.11.0"
 
-function download_arch_specific_executable {
-	curl -f -L -s -q \
-		"https://github.com/moparisthebest/static-curl/releases/download/${STATIC_CURL_VERSION}/curl-$1" \
-		-o /go/bin/curl || exit 1
-	chmod +x /go/bin/curl
-}
-
-case $TARGETARCH in
-"arm64")
-	download_arch_specific_executable aarch64
+case ${TARGETARCH:?TARGETARCH is required} in
+amd64)
+	asset=curl-amd64
+	expected=d18aa1f4e03b50b649491ca2c401cd8c5e89e72be91ff758952ad2ab5a83135d
 	;;
-"s390x")
-	echo "Not downloading static cURL because it does not exist for the $TARGETARCH architecture."
+arm64)
+	asset=curl-aarch64
+	expected=1b050abd1669f9a2ac29b34eb022cdeafb271dce5a4fb57d8ef8fadff6d7be1f
 	;;
 *)
-	download_arch_specific_executable "$TARGETARCH"
+	echo "Unsupported static cURL architecture: ${TARGETARCH}" >&2
+	exit 1
 	;;
 esac
+
+curl --fail --location --silent --show-error --retry 3 \
+	"https://github.com/moparisthebest/static-curl/releases/download/${STATIC_CURL_VERSION}/${asset}" \
+	--output /go/bin/curl
+printf '%s  %s\n' "${expected}" /go/bin/curl | sha256sum -c
+chmod +x /go/bin/curl

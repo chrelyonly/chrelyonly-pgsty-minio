@@ -352,7 +352,7 @@ func NewRedisTarget(id string, args RedisArgs, loggerOnce logger.LogOnce) (*Redi
 			}
 
 			// Must be done after AUTH
-			if _, err = conn.Do("CLIENT", "SETNAME", "MinIO"); err != nil {
+			if _, err = conn.Do("CLIENT", "SETNAME", "Silo"); err != nil {
 				conn.Close()
 				return nil, err
 			}

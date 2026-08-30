@@ -41,6 +41,8 @@ import (
 	"github.com/minio/minio-go/v7"
 	cr "github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio-go/v7/pkg/set"
+	"github.com/minio/minio-go/v7/pkg/tags"
+	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/pkg/v3/ldap"
 )
 
@@ -419,6 +421,15 @@ func (s *TestSuiteIAM) TestSTSWithTags(c *check) {
     },
     {
       "Effect":     "Allow",
+      "Action":     "s3:PutObjectTagging",
+      "Resource":    "arn:aws:s3:::%s/*",
+      "Condition": { "StringEquals": {
+        "s3:ExistingObjectTag/virus": "true",
+        "s3:RequestObjectTag/security": "public"
+      } }
+    },
+    {
+      "Effect":     "Allow",
       "Action":     "s3:DeleteObject",
       "Resource":    "arn:aws:s3:::%s/*"
     },
@@ -431,6 +442,9 @@ func (s *TestSuiteIAM) TestSTSWithTags(c *check) {
         "arn:aws:s3:::%s/*"
       ],
       "Condition": {
+        "StringEquals": {
+          "s3:RequestObjectTag/security": "public"
+        },
         "ForAllValues:StringLike": {
           "s3:RequestObjectTagKeys": [
             "security",
@@ -440,7 +454,7 @@ func (s *TestSuiteIAM) TestSTSWithTags(c *check) {
       }
     }
   ]
-}`, bucket, bucket, bucket, bucket)
+}`, bucket, bucket, bucket, bucket, bucket)
 	err = s.adm.AddCannedPolicy(ctx, policy, policyBytes)
 	if err != nil {
 		c.Fatalf("policy add error: %v", err)
@@ -462,8 +476,108 @@ func (s *TestSuiteIAM) TestSTSWithTags(c *check) {
 
 	// confirm that the user is able to access the bucket
 	uClient := s.getUserClient(c, accessKey, secretKey, "")
+	queryObject := object + "-query-tags"
+	queryTags := "security=public&virus=true"
+	// Query storage-class values were historically accepted without the strict
+	// header validation. Pin that compatibility while proving they are consumed.
+	presignedPut, err := uClient.Presign(ctx, http.MethodPut, bucket, queryObject, time.Minute, url.Values{
+		"x-amz-storage-class": {"CUSTOM_COMPAT"},
+		"x-amz-tagging":       {queryTags},
+	})
+	if err != nil {
+		c.Fatalf("unable to presign query-tagged upload: %v", err)
+	}
+	putReq, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedPut.String(), bytes.NewReader([]byte("stuff")))
+	if err != nil {
+		c.Fatalf("unable to build query-tagged upload: %v", err)
+	}
+	putResp, err := s.TestSuiteCommon.client.Do(putReq)
+	if err != nil {
+		c.Fatalf("query-tagged upload failed: %v", err)
+	}
+	putBody, readErr := io.ReadAll(putResp.Body)
+	putResp.Body.Close()
+	if readErr != nil {
+		c.Fatalf("unable to read query-tagged upload response: %v", readErr)
+	}
+	if putResp.StatusCode != http.StatusOK {
+		c.Fatalf("query-tagged upload returned %s: %s", putResp.Status, putBody)
+	}
+	storedTags, err := s.client.GetObjectTagging(ctx, bucket, queryObject, minio.GetObjectTaggingOptions{})
+	if err != nil {
+		c.Fatalf("unable to read persisted query tags: %v", err)
+	}
+	if got := storedTags.ToMap(); got["security"] != "public" || got["virus"] != "true" {
+		c.Fatalf("query tags were not persisted: %v", got)
+	}
+	queryObjectInfo, err := s.testServer.Obj.GetObjectInfo(ctx, bucket, queryObject, ObjectOptions{})
+	if err != nil {
+		c.Fatalf("unable to inspect query-tagged object: %v", err)
+	}
+	if queryObjectInfo.StorageClass != "CUSTOM_COMPAT" {
+		c.Fatalf("query storage class was not persisted: %q", queryObjectInfo.StorageClass)
+	}
+	c.mustGetObject(ctx, uClient, bucket, queryObject)
+
+	multipartObject := object + "-multipart-query-tags"
+	presignedMultipart, err := uClient.Presign(ctx, http.MethodPost, bucket, multipartObject, time.Minute, url.Values{
+		"uploads":       {""},
+		"x-amz-tagging": {queryTags},
+	})
+	if err != nil {
+		c.Fatalf("unable to presign query-tagged multipart upload: %v", err)
+	}
+	multipartReq, err := http.NewRequestWithContext(ctx, http.MethodPost, presignedMultipart.String(), nil)
+	if err != nil {
+		c.Fatalf("unable to build query-tagged multipart upload: %v", err)
+	}
+	multipartResp, err := s.TestSuiteCommon.client.Do(multipartReq)
+	if err != nil {
+		c.Fatalf("query-tagged multipart upload failed: %v", err)
+	}
+	multipartBody, readErr := io.ReadAll(multipartResp.Body)
+	multipartResp.Body.Close()
+	if readErr != nil {
+		c.Fatalf("unable to read query-tagged multipart response: %v", readErr)
+	}
+	if multipartResp.StatusCode != http.StatusOK {
+		c.Fatalf("query-tagged multipart upload returned %s: %s", multipartResp.Status, multipartBody)
+	}
+	var multipartResult InitiateMultipartUploadResponse
+	if err = xml.Unmarshal(multipartBody, &multipartResult); err != nil || multipartResult.UploadID == "" {
+		c.Fatalf("invalid query-tagged multipart response: uploadID=%q err=%v", multipartResult.UploadID, err)
+	}
+	if err = (minio.Core{Client: s.client}).AbortMultipartUpload(ctx, bucket, multipartObject, multipartResult.UploadID); err != nil {
+		c.Fatalf("unable to clean up query-tagged multipart upload: %v", err)
+	}
+
 	c.mustPutObjectWithTags(ctx, uClient, bucket, object)
 	c.mustGetObject(ctx, uClient, bucket, object)
+	objectInfo, err := s.client.StatObject(ctx, bucket, object, minio.StatObjectOptions{})
+	if err != nil {
+		c.Fatalf("unable to stat object for conditional GET: %v", err)
+	}
+	presignedGet, err := uClient.PresignedGetObject(ctx, bucket, object, time.Minute, nil)
+	if err != nil {
+		c.Fatalf("unable to presign conditional GET: %v", err)
+	}
+	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, presignedGet.String(), nil)
+	if err != nil {
+		c.Fatalf("unable to build conditional GET: %v", err)
+	}
+	getReq.Header.Set(xhttp.IfNoneMatch, `"`+objectInfo.ETag+`"`)
+	getResp := httptest.NewRecorder()
+	s.testServer.Server.Config.Handler.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusNotModified || getResp.Body.Len() != 0 {
+		c.Fatalf("conditional GET returned status %d with body %q", getResp.Code, getResp.Body.String())
+	}
+	replacementTags, err := tags.NewTags(map[string]string{"security": "public", "reviewed": "yes"}, true)
+	if err != nil {
+		c.Fatalf("unable to build replacement tags: %v", err)
+	}
+	if err = uClient.PutObjectTagging(ctx, bucket, object, replacementTags, minio.PutObjectTaggingOptions{}); err != nil {
+		c.Fatalf("user is unable to replace object tags: %v", err)
+	}
 
 	assumeRole := cr.STSAssumeRole{
 		Client:      s.TestSuiteCommon.client,
@@ -501,6 +615,9 @@ func (s *TestSuiteIAM) TestSTSWithTags(c *check) {
 
 	if err = minioClient.RemoveObject(ctx, bucket, object, minio.RemoveObjectOptions{}); err != nil {
 		c.Fatalf("user is unable to delete the object: %v", err)
+	}
+	if err = minioClient.RemoveObject(ctx, bucket, queryObject, minio.RemoveObjectOptions{}); err != nil {
+		c.Fatalf("user is unable to delete the query-tagged object: %v", err)
 	}
 }
 
@@ -1948,9 +2065,7 @@ func TestSTSLDAPLoginRateLimiterCleanup(t *testing.T) {
 }
 
 func TestWriteSTSThrottledResponse(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "http://minio.test", strings.NewReader(""))
 	rr := httptest.NewRecorder()
-	req = req.WithContext(newContext(req, rr, "test-throttle"))
 
 	writeSTSThrottledResponse(rr)
 

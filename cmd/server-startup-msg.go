@@ -61,7 +61,7 @@ func printStartupMessage(apiEndpoints []string, err error) {
 
 	// Prints `mc` cli configuration message chooses
 	// first endpoint as default.
-	printCLIAccessMsg(strippedAPIEndpoints[0], "myminio")
+	printCLIAccessMsg(strippedAPIEndpoints[0], "mysilo")
 
 	// Prints documentation message.
 	printObjectAPIMsg()
@@ -144,7 +144,7 @@ func printServerCommonMsg(apiEndpoints []string) {
 
 // Prints startup message for Object API access, prints link to our SDK documentation.
 func printObjectAPIMsg() {
-	logger.Startup(color.Blue("\nDocs: ") + "https://silo.pigsty.io")
+	logger.Startup(color.Blue("\nDocs: ") + "https://silo.pgsty.com/docs/")
 }
 
 func printLambdaTargets() {
@@ -184,9 +184,9 @@ func printCLIAccessMsg(endPoint string, alias string) {
 	// Get saved credentials.
 	cred := globalActiveCred
 
-	const mcQuickStartGuide = "https://silo.pigsty.io/reference/minio-mc.html#quickstart"
+	const mcQuickStartGuide = "https://silo.pgsty.com/reference/minio-mc/#quickstart"
 
-	// Configure 'mc', following block prints platform specific information for minio client.
+	// Configure mc and print platform-specific connection information.
 	if color.IsTerminal() && (!globalServerCtxt.Anonymous && globalAPIConfig.permitRootAccess()) {
 		logger.Startup(color.Blue("\nCLI: ") + mcQuickStartGuide)
 		mcMessage := fmt.Sprintf("$ mc alias set '%s' '%s' '%s' '%s'", alias,

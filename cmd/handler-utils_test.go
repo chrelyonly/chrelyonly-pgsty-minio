@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/minio/minio/internal/config"
@@ -191,6 +192,63 @@ func TestExtractMetadataHeaders(t *testing.T) {
 		if err == nil && !reflect.DeepEqual(metadata, testCase.metadata) {
 			t.Fatalf("Test %d failed: Expected \"%#v\", got \"%#v\"", i+1, testCase.metadata, metadata)
 		}
+	}
+}
+
+func TestExtractMetadataFromRequestUsesHeaderPrecedence(t *testing.T) {
+	query := make(url.Values)
+	query.Set(strings.ToLower(xhttp.AmzStorageClass), "QUERY-CLASS")
+	query.Set(strings.ToLower(xhttp.AmzObjectTagging), "source=query")
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/test?"+query.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(xhttp.AmzStorageClass, "HEADER-CLASS")
+	req.Header.Set(xhttp.AmzObjectTagging, "source=header")
+	if err = req.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata, err := extractMetadataFromReq(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := metadata[xhttp.AmzStorageClass]; got != "HEADER-CLASS" {
+		t.Fatalf("storage class: expected header, got %q", got)
+	}
+	if got := metadata[xhttp.AmzObjectTagging]; got != "source=header" {
+		t.Fatalf("tagging: expected header, got %q", got)
+	}
+
+	// Presence, rather than a non-empty value, establishes precedence. This
+	// prevents a query value from taking over when a signed header is empty.
+	req.Header[xhttp.AmzObjectTagging] = []string{""}
+	if got, ok := getRequestHeaderOrQueryValue(req, xhttp.AmzObjectTagging); !ok || got != "" {
+		t.Fatalf("empty header did not override query: value=%q present=%v", got, ok)
+	}
+}
+
+func TestExtractMetadataFromRequestKeepsQueryCompatibility(t *testing.T) {
+	query := make(url.Values)
+	query.Set(strings.ToLower(xhttp.AmzStorageClass), "REDUCED_REDUNDANCY")
+	query.Set(strings.ToLower(xhttp.AmzObjectTagging), "security=public")
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/test?"+query.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = req.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata, err := extractMetadataFromReq(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := metadata[xhttp.AmzStorageClass]; got != "REDUCED_REDUNDANCY" {
+		t.Fatalf("storage class query value lost: %q", got)
+	}
+	if got := metadata[xhttp.AmzObjectTagging]; got != "security=public" {
+		t.Fatalf("tagging query value lost: %q", got)
 	}
 }
 
