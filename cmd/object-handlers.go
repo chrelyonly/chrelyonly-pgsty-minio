@@ -619,7 +619,12 @@ func (api objectAPIHandlers) getObjectAttributesHandler(ctx context.Context, obj
 	if checkPreconditions(ctx, w, r, objInfo, opts) {
 		return
 	}
-	if crypto.SSEC.IsEncrypted(objInfo.UserDefined) && r.Header.Get(xhttp.MinIOSourceReplicationRequest) != "true" {
+	// Only a caller authorized to replicate this object may read SSE-C
+	// attributes without presenting the customer key. The header alone is
+	// client controlled, so it cannot stand in for that authorization.
+	trustedReplicationRequest := r.Header.Get(xhttp.MinIOSourceReplicationRequest) == "true" &&
+		checkRequestAuthType(ctx, r, policy.ReplicateObjectAction, bucket, object) == ErrNone
+	if crypto.SSEC.IsEncrypted(objInfo.UserDefined) && !trustedReplicationRequest {
 		if _, err = crypto.SSEC.UnsealObjectKey(r.Header, objInfo.UserDefined, bucket, object); err != nil {
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 			return
