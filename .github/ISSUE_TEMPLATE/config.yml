@@ -1,8 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Silo Documentation
-    url: https://silo.pgsty.com/docs/
-    about: Installation, configuration, operations, and compatibility guidance
-  - name: Private Security Report
-    url: https://github.com/pgsty/silo/security/advisories/new
-    about: Privately report a suspected vulnerability in Silo
